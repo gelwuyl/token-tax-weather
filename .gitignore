@@ -1,0 +1,4 @@
+# The engine writes the API declarations into the mod's own folder as it loads
+# it. They are this build's, not this plugin's, and must never be committed.
+**/.claude-plugin/types/
+node_modules/

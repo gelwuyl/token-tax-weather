@@ -1,0 +1,6 @@
+{
+  "description": "token-tax-weather: session.start, classic.SessionStart, ui.render{AbovePrompt}, command.run{command=keepwarm|cache-tax|cache-tax-diagnostic}, prompt.submit, turn.step, turn.complete, session.compact. A coloured band above the prompt, drawn on the desktop and terminal surfaces, with the status line as the fallback elsewhere. Supersedes cache-tax 2.1.3: user-supplied rates, warn-only guard, no automatic warming.",
+  "modules": [
+    "./register.ts"
+  ]
+}
