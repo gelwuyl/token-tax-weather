@@ -187,9 +187,11 @@ describe('guard', () => {
     const result = await $.prompt.submit(prompt('hi'))
     expect(result.drop).toBe(undefined)
     expect(w.entered).toEqual(['hi'])
-    const warning = w.logs.join('\n')
+    // The warning is a status-line notice now, not a transcript line.
+    const warning = w.status.at(-1) ?? ''
     expect(warning).toMatch(/the prompt cache went cold/)
     expect(warning).toMatch(/Sending anyway\./)
+    expect(w.logs.join('\n')).not.toMatch(/the prompt cache went cold/)
   })
 })
 
@@ -510,7 +512,7 @@ describe('user-supplied rates', () => {
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
     await clock.advance(2 * HOUR)
     await $.prompt.submit(prompt('hi'))
-    const warning = w.logs.join('\n')
+    const warning = w.status.at(-1) ?? ''
     expect(warning).toMatch(/n\/a/)
     expect(warning).not.toMatch(/NaN|Infinity/)
     const card = (await $.command.run(run('cache-tax', ''))).text
@@ -616,5 +618,63 @@ describe('the band above the prompt', () => {
     world(on, { window: 0 })
     await $.session.start(bandSession)
     expect(await bandOf($)).toBe(null)
+  })
+})
+
+// A cold resume is the engine's own computed fields for a settings hook; the
+// notice it seeds is what a person reads once and acts on, so it belongs on the
+// status line rather than in the transcript.
+const resume: Parameters<Engine['classic']['SessionStart']>[0] = {
+  source: 'resume', model: MODEL, context_tokens: 200000,
+  seconds_since_last_response: 2 * HOUR, prompt_cache_likely_expired: true,
+}
+
+describe('status-line notices', () => {
+  test('a cold resume pins the notice on the band surface, and the turn clears it', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.classic.SessionStart(resume)
+    // The band surface normally leaves the status line empty, but a notice is not
+    // the readout: it is pinned wherever it is set, the band's own surface included.
+    expect(w.status.at(-1)).toMatch(/^resuming cold\./)
+    await $.turn.complete(turn())
+    // No cold write this turn, so the notice is cleared and the line is empty again.
+    expect(w.status.at(-1)).toBe(undefined)
+  })
+
+  test('a notice outranks the fallback on a surface the band never reaches', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 } })
+    await $.session.start(session)
+    // With no notice the readout is the fallback facts.
+    expect(w.status.at(-1) ?? '').toMatch(/^off · /)
+    await $.classic.SessionStart(resume)
+    // A live notice takes precedence over them.
+    expect(w.status.at(-1)).toMatch(/^resuming cold\./)
+    expect(w.status.at(-1) ?? '').not.toMatch(/^off · /)
+  })
+
+  test('a cold write is a status notice that survives its turn and is cleared by the next', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { store: new Map(), live: { tokens: 100000 } })
+    await $.session.start(session)
+    // A full rewrite this turn: 60k written against a 100k context.
+    await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 60000 }) }))
+    expect(w.status.at(-1)).toMatch(/^cold write of 60k tokens/)
+    // The transcript no longer carries it.
+    expect(w.logs.join('\n')).not.toMatch(/cold write of/)
+    // It outlives its own turn; the next ordinary turn clears it and the readout returns.
+    await $.turn.complete(turn())
+    expect(w.status.at(-1) ?? '').toMatch(/^off · /)
+  })
+
+  test('the command-name clash stays a transcript line, never a status notice', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { commands: ['keepwarm'] })
+    await $.session.start(session)
+    // The setup diagnostic is read back later, so it keeps to the transcript.
+    expect(w.logs.join('\n')).toMatch(/\/keepwarm is already registered by another plugin/)
+    expect(w.status.join('\n')).not.toMatch(/already registered/)
   })
 })

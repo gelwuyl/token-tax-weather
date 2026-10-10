@@ -106,6 +106,14 @@ export type State = {
   now: number
   /** The surface this session runs on: the band is raised on `desktop` and `terminal` only. */
   surface: string
+  /**
+   * The one-off line pinned on the status line ahead of the readout, or null for
+   * none. It carries a cache-state notice — a cold resume, a cold send, a recorded
+   * cold write — rather than the continuously-updating facts, so it is read once
+   * and not scrolled back to. A second notice simply replaces the first: last
+   * writer wins, which is what the status line itself does.
+   */
+  notice: string | null
 }
 
 /** The configured rates for a model, or null when none are configured. Exact ID only. */
@@ -243,6 +251,7 @@ export function resetForClear(s: State) {
   s.lastRead = 0
   s.percent = 0
   s.history = []
+  s.notice = null
   disarm(s)
 }
 
@@ -443,10 +452,11 @@ function band(
   return Box({ flexDirection: 'row', paddingX: 1, children: parts })
 }
 
-// The line this mod keeps in its own slot under the prompt. What is armed when a
-// window is, and otherwise what the costing is based on — so the slot always says
-// something true about this mod rather than sitting empty. It names the model the
-// engine reports, because that exact ID decides whether rates are found.
+// The line this mod keeps in its own slot under the prompt. The continuously
+// updating readout — what is armed when a window is, and otherwise what the
+// costing is based on — so the slot says something true about this mod rather
+// than sitting empty. It names the model the engine reports, because that exact
+// ID decides whether rates are found.
 //
 // The host already prints the plugin's own name ahead of this text, so the line
 // never repeats it.
@@ -463,16 +473,33 @@ function band(
 // surface is still attaching.
 //
 // The band above the prompt is raised on the desktop and terminal surfaces only,
-// and where it is raised it carries these same facts in colour. So the status
-// line is the fallback for the surfaces the band never reaches, and the two never
-// both draw: the same thing is never said twice.
+// and where it is raised it carries the readout in colour. So the status line is
+// the fallback for the surfaces the band never reaches, and the two never both
+// draw the readout: the same thing is never said twice. A live notice is not the
+// readout — it is pinned wherever it is set, the band's own surfaces included, and
+// it takes the line until the turn that raised it is over.
 const BAND_SURFACES = new Set(['desktop', 'terminal'])
 
+// The one place that writes the status line, so a notice and the readout never
+// race each other for it. A live notice outranks everything and shows on every
+// surface, the band's included: it is a one-off thing to read now, not the facts
+// the band keeps current, so it is worth saying even where the band is up.
 async function publish($: EngineInterface, s: State) {
   // Stamped whatever happens: the band draws synchronously and reads this rather
   // than asking the clock again.
   s.now = await $.clock.now()
-  if (!s.owns || BAND_SURFACES.has(s.surface)) return
+  if (!s.owns) return
+  if (s.notice) {
+    $.ui.status(s.notice)
+    return
+  }
+  // With no notice the band says all of it in colour, so the status line is
+  // cleared rather than left stale — which is also what takes a finished notice
+  // off the screen.
+  if (BAND_SURFACES.has(s.surface)) {
+    $.ui.status(undefined)
+    return
+  }
   $.ui.status(statusText(s, s.now))
 }
 
@@ -630,7 +657,7 @@ export function freshState(): State {
   return {
     sid: '', deadline: 0, every: PING_AFTER_MS, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
     guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0, owns: false,
-    window: 0, percent: 0, windowSource: null, history: [], now: 0, surface: '',
+    window: 0, percent: 0, windowSource: null, history: [], now: 0, surface: '', notice: null,
   }
 }
 
@@ -849,9 +876,13 @@ export const register: Register = on => {
     const line = seedFromResume(s, e, await $.clock.now())
     // The resume payload may omit the model; without it the guard cannot price the cold write.
     if (!s.lastModel) s.lastModel = await $.session.model()
-    if (line) $.ui.log(line)
+    // A cold resume is a notice on the status line, not a transcript line: it is
+    // read now, and it stays up until the first turn finishes.
+    if (line) s.notice = line
     // The seeded clock decides whether a restored window pings before the first turn: never when it is cold.
     await arm($, s)
+    // arm() only paints when a window is armed; a bare resume still has to show.
+    if (line) await publish($, s)
     return r
   })
 
@@ -906,8 +937,10 @@ export const register: Register = on => {
     if (typeof e.text !== 'string' || e.text.trimStart().startsWith('/')) return next(e)
     const now = await $.clock.now()
     if (isCold(s, now) && s.ctx >= BIG_TOKENS) {
-      // Warn only: the prompt always goes through, whatever the guard says.
-      $.ui.log(`${guardText(s, now)} Sending anyway.`)
+      // Warn only: the prompt always goes through, whatever the guard says. The
+      // warning is a notice on the status line, not a transcript line, and it
+      // stays up while the turn it belongs to runs.
+      s.notice = `${guardText(s, now)} Sending anyway.`
       s.coldWritePending = true
     }
     // The surface may still have been attaching when session start painted, so
@@ -931,6 +964,10 @@ export const register: Register = on => {
     if (now - s.lastRequestAt > e.durationMs) s.lastRequestAt = now
     s.compacted = false
     const u = e.usage
+    // The notice this turn raises, if any. It is set after the clear below, so a
+    // cold write — a call to action — outlives its own turn by one, unlike the
+    // notice from the prompt or the resume it supersedes.
+    let notice: string | null = null
     if (u) {
       if (u.model) s.lastModel = u.model
       const prev = s.ctx
@@ -950,7 +987,7 @@ export const register: Register = on => {
         s.misses.push({ at: now, tokens: write, usd })
         // No warming is armed here: a cold write is recorded and reported, never
         // answered with spending. /keepwarm is the only thing that arms a window.
-        $.ui.log(`cold write of ${fmtTok(write)} tokens${usd == null ? '' : ` (${fmtUsd(usd)}, ${RATE_SOURCE})`} recorded. Run /keepwarm to hold the cache; this mod will not arm it for you.`)
+        notice = `cold write of ${fmtTok(write)} tokens${usd == null ? '' : ` (${fmtUsd(usd)}, ${RATE_SOURCE})`} recorded. Run /keepwarm to hold the cache; this mod will not arm it for you.`
       }
     }
     s.coldWritePending = false
@@ -961,6 +998,12 @@ export const register: Register = on => {
     // also what reveals which model the engine is really using, so the idle footer
     // is repainted here; arm() repaints an armed one itself.
     s.stopped = null
+    // A notice is a one-shot too: it stays up while the turn it belongs to runs,
+    // and the ordinary readout returns once that turn is over. Cleared here, at the
+    // end of the turn, before the paints below; the cold write this turn raised is
+    // the one thing set after the clear, so it stays until the next turn.
+    s.notice = null
+    if (notice) s.notice = notice
     await refreshWindow($, s)
     await arm($, s)
     if (!s.deadline) await publish($, s)

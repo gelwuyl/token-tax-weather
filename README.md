@@ -32,7 +32,18 @@ claude plugin install token-tax-weather@token-tax-weather
 
 The band is raised on the **desktop** and **terminal** surfaces. On the
 surfaces that do not raise it the same facts go to the status line instead,
-without colour, so the two never both draw.
+without colour, so the two never both draw the readout.
+
+## Notices
+
+The band carries the continuously-updating facts: the forecast, the cache read,
+the countdown, the price. The one-off notices are different. A cold resume, a
+cold send the guard warns about, and a cold write it records are pinned on the
+status line under the prompt — not in the transcript — so they are read once
+where you are working, rather than scrolled back to. A notice stays up while the
+turn it belongs to runs and clears when that turn finishes; a second notice
+simply replaces the first. Unlike the readout, a notice is shown on every
+surface, the band's own included.
 
 ## Commands
 
