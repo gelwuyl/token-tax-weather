@@ -1,0 +1,4 @@
+# The plugin's three installed copies are kept byte-identical, and the engine's
+# loader has no opinion on line endings. Pinning them keeps a checkout from
+# rewriting the working tree and quietly diverging from the loaded copy.
+* text=auto eol=lf
