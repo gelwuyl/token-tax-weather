@@ -57,8 +57,8 @@ which has the room for them.
 | --- | --- |
 | `/keepwarm` | Arms a six-hour window that pings the cache so it does not expire |
 | `/keepwarm 90m`, `2h30m`, `6h` | Arms a window of that length |
-| `/keepwarm every 50m` | Arms it, pinging every 50 minutes |
-| `/keepwarm always` | Arms it with no deadline, this session |
+| `/keepwarm 6h every 20m` | A window, pinging every 20 minutes instead of every 50. The period has to come *after* the window — a bare `/keepwarm every 20m` has no window and is refused |
+| `/keepwarm always` | The same six-hour window as the bare command, kept for parity with `cache-tax`. It is **not** an unbounded window and is not remembered across sessions |
 | `/keepwarm off` | Disarms it |
 | `/keepwarm status` | Reports what is armed |
 | `/cache-tax` | The full card: state, window, prices, the cache's effect, break-even |
