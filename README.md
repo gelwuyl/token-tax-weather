@@ -40,7 +40,7 @@ substitution, not an extra readout beside the band.
 | --- | --- |
 | `/keepwarm` | Arms a six-hour warming window, with a ping after 50 minutes of idle time |
 | `/keepwarm 90m`, `/keepwarm 2h30m`, `/keepwarm 6h` | Arms a window of that length |
-| `/keepwarm 6h every 20m` | Uses a 20-minute idle interval; the window must come before `every` |
+| `/keepwarm 6h every 20m` | Starts the search at a 20-minute idle interval; the window must come before `every`. The interval then moves as the pings narrow the TTL — see [How the ping interval finds itself](#how-the-ping-interval-finds-itself) |
 | `/keepwarm always` | Same six-hour window as the bare command, for compatibility with `cache-tax`; not unbounded or remembered across sessions |
 | `/keepwarm off` | Disarms warming |
 | `/keepwarm status` | Reports what is armed |
@@ -213,37 +213,39 @@ drops a prompt. The rates behind each figure are in `/cache-tax`.
 | --- | --- | --- | --- |
 | 1 | **state** | `keepwarm off` · `keepwarm on` · `keepwarm stopped: <reason>` | Always |
 | 2 | **window** | `<duration> left` | A warming window is armed |
-| 3 | **ping** | `ping in <duration>` · `ping in <duration> (held <gap>)` · `ping after first turn` · `ping after next turn` | A warming window is armed |
-| 4 | **effect** | `($<amount>, <share>%)` · `+$<amount>, <share>%` · `+$0.00, 0%` · `n/a` | A context exists |
+| 3 | **ping** | `ping in <duration>` · `ping in <duration> (held <gap>)` · `ping in <duration> (went at <gap>)` · `ping after first turn` · `ping after next turn` | A warming window is armed |
+| 4 | **cost** | `$<from cache> of $<no cache>, <share>%` · `n/a` | A context exists |
 | 5 | **arm hint** | `/keepwarm to arm the window` | No warming window is armed |
 | 6 | **card hint** | `/cache-tax for the full card` | Always |
 
 Examples:
 
 ```text
-keepwarm off · ($0.09, 7%) · /keepwarm to arm the window · /cache-tax for the full card
-keepwarm on · 6h00m left · ping in 50m · ($0.09, 7%) · /cache-tax for the full card
-keepwarm on · 6h00m left · ping in 50m (held 50m) · ($0.09, 7%) · /cache-tax for the full card
+keepwarm off · $0.0020 of $0.03, 7% · /keepwarm to arm the window · /cache-tax for the full card
+keepwarm on · 6h00m left · ping in 50m · $0.0020 of $0.03, 7% · /cache-tax for the full card
+keepwarm on · 6h00m left · ping in 50m (held 50m) · $0.0020 of $0.03, 7% · /cache-tax for the full card
+keepwarm on · 5h10m left · ping in 25m (went at 50m) · $0.0020 of $0.03, 7% · /cache-tax for the full card
 keepwarm on · 6h00m left · ping after first turn · /cache-tax for the full card
-keepwarm on · 6h00m left · ping after next turn · ($0.09, 7%) · /cache-tax for the full card
-keepwarm stopped: ping not sent (nothing-to-fork) · ($0.09, 7%) · /keepwarm to arm the window · /cache-tax for the full card
+keepwarm on · 6h00m left · ping after next turn · $0.0020 of $0.03, 7% · /cache-tax for the full card
+keepwarm stopped: ping not sent (nothing-to-fork) · $0.0020 of $0.03, 7% · /keepwarm to arm the window · /cache-tax for the full card
 ```
 
-**The share inside the bracket is the cache read's price as a share of the
-uncached one** — the same figure the card shows as `from cache … = 7% of that`.
-It sits beside the money because the two answer different questions: the share
-says how good the cache deal is, and it is the same for every context size with
-a given model, while the money says what that deal is worth on the context in
-hand. An Opus read is `714%`, which is the whole of what that row means. The
-share is absent when there is no money to take it of, so `n/a` stands alone.
+**The cost slot names both prices rather than a signed difference**: what one read
+of this context costs from cache, and what the same context costs sent uncached.
+`$0.0020 of $0.03` cannot be misread as either one alone, where a bare signed
+figure could be read as a saving when it was a cost. The share repeats the ratio
+in the form that is read fastest, and it is the same for every context size with
+a given model, so it says how good the deal is while the money says what the deal
+is worth on the context in hand. There is no share when there is no money to take
+one of, so `n/a` stands alone.
 
 - **`window` is the warming budget**, not a provider-confirmed cache lifetime. It
   is the time left in the window `/keepwarm` armed.
-- **`(held <gap>)` is what the last ping proved.** A warm ping after a gap of *N*
-  means the provider's cache outlasted *N*, so the TTL is at least that — a real
-  measurement of a number nothing in the engine reports, from a request the window
-  was going to send anyway. It appears only after a warm ping; a cold one stops the
-  window instead, and its bound is already the stop reason on this same line.
+- **`(held <gap>)` and `(went at <gap>)` are what the last ping proved.** A warm
+  ping after a gap of *N* means the provider's cache outlasted *N*, so the TTL is
+  at least that; a cold one means it is under. Neither number is reported by the
+  engine — the boundaries come from requests the window was going to send anyway.
+  Both move the interval the next ping uses, which is why both are worth saying.
 - **The two `ping after` forms** stand in for the countdown while there is no warm
   reading to count from: before the session's first turn, and after the estimated
   cache lifetime has elapsed.
@@ -268,14 +270,14 @@ window, minus the hints.
 | 2 | **ping** | As the desktop and terminal form's | A warming window is armed |
 | 3 | **context** | `ctx <tokens>` · `no context yet` | Always |
 | 4 | **cache** | `<tokens> cache turn` | The last turn served something from cache |
-| 5 | **effect** | As the desktop and terminal form's | A context exists |
+| 5 | **cost** | As the desktop and terminal form's | A context exists |
 
 Examples:
 
 ```text
-off · ctx 199.1k · 190.4k cache turn · ($0.08, 7%)
-6h00m left · ping in 50m · ctx 199.1k · 190.4k cache turn · ($0.08, 7%)
-6h00m left · ping after next turn · ctx 199.1k · ($0.08, 7%)
+off · ctx 199.1k · 190.4k cache turn · $0.0060 of $0.09, 7%
+6h00m left · ping in 50m · ctx 199.1k · 190.4k cache turn · $0.0060 of $0.09, 7%
+6h00m left · ping after next turn · ctx 199.1k · $0.0060 of $0.09, 7%
 off · no context yet
 ```
 
@@ -335,16 +337,48 @@ outcome is a fact about the clock:
 | cold after a gap of *N* | the provider's TTL is **under** *N* |
 
 So the card reads `last ping … (warm after 50m idle, so the provider's TTL is at
-least that)`, or the same sentence with *under* where the ping came back cold and
-the window stopped. A warm bound also reaches the status line, folded into the
-ping slot it came from as `ping in 50m (held 50m)`; the cold one needs no slot,
-because stopping the window already puts it on that line. The bound
-costs nothing to learn: it comes from a request the window was going to send
-anyway. **This is the one honest way to set `every`** — arm a window, read what
-the first ping proves, and if it came back cold before your interval elapsed, the
-provider's TTL is shorter than the default 50m and `every` must come down to suit
-it. A ping that keeps coming back cold is the plugin telling you that the
-interval, not the idea, is wrong.
+least that)`, or the same sentence with *under* where the ping came back cold.
+Both bounds also reach the status line, folded into the ping slot they came from:
+`ping in 50m (held 50m)` after a warm ping, `ping in 25m (went at 50m)` after a
+cold one. Neither takes a slot of its own, and both are worth saying, because
+each moves the interval the window pings at next. The bound costs nothing to
+learn: it comes from a request the window was going to send anyway.
+
+### How the ping interval finds itself
+
+`every` is the interval a window **starts** at, not one it is stuck with. Each
+ping narrows the bracket around the TTL, and the next interval is the midpoint of
+whatever the pings have settled. With a TTL of about 45 minutes and the default
+50-minute start:
+
+| The ping at | Brackets to | Next ping |
+| --- | --- | --- |
+| 50m, cold | TTL is under 50m | 25m |
+| 25m, warm | TTL is at least 25m | 38m |
+| 38m, warm | TTL is at least 38m | 44m |
+| 44m, warm | TTL is at least 44m | 47m |
+| 47m, cold | TTL is under 47m | 45m |
+| 45m, cold | TTL is under 45m |
+
+settles at 42m |
+
+The search stops once the bracket is down to a two-minute margin, and settles at
+the longest gap **proven** to work, less that margin. That is what the last two
+rows buy: a window that only ever halved would have stopped at the first gap that
+worked — 25m — and pinged there for the rest of its six hours, sending about 1.8
+times as many requests as one pinging at 42m against the same 45-minute TTL.
+
+Two things the search will not do. It will not go below one minute, because below
+that it is not warming a cache but polling one. And it stops outright when a ping
+**neither reads nor writes** a cache entry, because that is not a short TTL but no
+caching at all — the case where continuing would spend on every interval and have
+nothing to show for any of it.
+
+The interval it settles on is remembered in the session's store, so a window
+re-armed in the same session — or opened in the next one — resumes at the interval
+the last one learned instead of starting the search over. `/keepwarm … every 30m`
+resets the search and starts from 30m, because a number you name is newer than
+anything the pings found.
 
 Three consequences worth being explicit about:
 
@@ -389,18 +423,19 @@ knowing any rate. A share that is real but rounds away shows `<1%` rather than
 The **effect** is `from cache` minus `no cache` — the difference between two of
 those figures:
 
-- **A saving** is shown in parentheses, `($0.03, 7%)`: reading this context from
-  cache costs less than uncached input. Parentheses are accounting's own mark for
-  a credit, and avoid a minus sign that could be read as a hyphen.
-- **A surcharge** carries a leading `+`, `+$0.03, 714%`: reading it from cache
-  costs more than uncached input.
-- **Zero** is `+$0.00, 0%`: the two input costs are equal. It is a real answer,
-  and it never takes parentheses.
-- **`n/a`:** no rates are configured for the model, so there is no share either.
+- **A saving** is shown in parentheses, `($0.03)`: reading this context from cache
+  costs less than uncached input. Parentheses are accounting's own mark for a
+  credit, and avoid a minus sign that could be read as a hyphen.
+- **A surcharge** carries a leading `+`, `+$0.03`: reading it from cache costs
+  more than uncached input.
+- **Zero** is `+$0.00`: the two input costs are equal. It is a real answer, and it
+  never takes parentheses.
+- **`n/a`:** no rates are configured for the model.
 
-The second figure inside the bracket is `from cache` as a share of `no cache`,
-and it appears on the status line as well as here, because the two figures answer
-different questions — see
+The card carries the signed difference because it has room to say what a sign
+means. **The status line does not**, so it carries the two costs themselves —
+`$0.0020 of $0.03, 7%` — which no reader can mistake for a saving when they are a
+cost. The share is the same figure in both places; see
 [the desktop and terminal form](#the-desktop-and-terminal-form-while-the-band-is-drawing).
 
 It is a hypothetical comparison for **one read of the current context**. It is
@@ -420,14 +455,18 @@ Prices are user-supplied USD per million tokens in `token-tax-weather/hooks/regi
 ```ts
 export const RATES: Record<string, Rates> = {
   'claude-fable-5': { input: 0.43, cacheRead: 0.03, cacheWrite: 0, output: 0.87 },
-  'claude-opus-5-5': { input: 0.0007, cacheRead: 0.005, cacheWrite: 0, output: 0.6 },
+  'claude-opus-5-5': { input: 0.0348, cacheRead: 0.005, cacheWrite: 0, output: 0.1392 },
 }
 ```
 
 Rows match the engine's exact model ID, not the picker's display label. A model
-with no row shows `n/a`; the plugin never borrows another model's price. With a
-zero cache-write price, avoiding a cold write saves nothing, so paid warming
-cannot pay for itself at these rates.
+with no row shows `n/a`; the plugin never borrows another model's price.
+
+Both rows read at a fraction of their input rate, so the cache is a saving on
+either. Both also have a zero cache-write price, which means a cold re-write is
+billed at nothing — so **paid warming cannot pay for itself at these rates**,
+however good the read discount looks. Filling in a real cache-write price is what
+would make the break-even line mean something.
 
 ## Privacy and limits
 

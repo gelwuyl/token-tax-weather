@@ -28,6 +28,14 @@ const MIN_PING_MS = 60 * 1000
 const DEFAULT_WINDOW_MS = 6 * 60 * 60 * 1000
 const BIG_TOKENS = 50000
 const PING_PROMPT = 'Reply with the single word: warm'
+/**
+ * The safety margin subtracted from a gap a ping survived, and the width at
+ * which the search stops looking. One figure does both jobs because a bracket
+ * narrower than the margin cannot say anything the margin does not already
+ * cover: below it, the conservative answer and the precise one are the same
+ * interval.
+ */
+const TUNE_MARGIN_MS = 2 * 60 * 1000
 
 // Namespaced so the Custom Mod never inherits the Original Mod's window, ping
 // period, or `always` flag — inheriting `always` would arm paid warming on its
@@ -52,10 +60,11 @@ type Rates = { input: number; cacheRead: number; cacheWrite: number; output: num
 // took the second set. Both are stated per million tokens; if an operator quotes
 // a provider's per-1K numbers instead, the whole table is 1000x out.
 //
-// Note on the Opus row: its cacheRead (0.005) is about 7x its input (0.0007), so
-// reading the prompt cache costs more than sending the same context uncached.
-// The card reports what the arithmetic says; it does not pretend the figures are
-// typical.
+// Note on the Opus row: its cacheRead (0.005) is now below its input (0.0348),
+// so reading the prompt cache costs less than sending the same context uncached.
+// The cacheWrite is zero, so a cold re-write is billed at nothing and warming
+// still cannot pay for itself at these rates. The card reports what the
+// arithmetic says; it does not pretend the figures are typical.
 //
 // Add rows in this shape, then update the plugin:
 //
@@ -63,7 +72,7 @@ type Rates = { input: number; cacheRead: number; cacheWrite: number; output: num
 //
 export const RATES: Record<string, Rates> = {
   'claude-fable-5': { input: 0.43, cacheRead: 0.03, cacheWrite: 0, output: 0.87 },
-  'claude-opus-5-5': { input: 0.0007, cacheRead: 0.005, cacheWrite: 0, output: 0.6 },
+  'claude-opus-5-5': { input: 0.0348, cacheRead: 0.005, cacheWrite: 0, output: 0.1392 },
 }
 
 const RATE_SOURCE = 'user-supplied rates'
@@ -76,6 +85,17 @@ export type State = {
   sid: string
   deadline: number
   every: number
+  /**
+   * The two bounds the pings have put on the provider's cache TTL, which nothing
+   * in the engine reports: `warmAt` is the longest idle gap a ping survived, a
+   * proven floor, and `coldAt` the shortest one that failed, a proven ceiling.
+   * Together they close on the TTL from both sides — walking down from a failure
+   * alone would settle for the first gap that happened to work, so a 45m TTL
+   * reached through a cold 50m would leave the window pinging at 25m forever.
+   * Zero and null before any ping has answered.
+   */
+  warmAt: number
+  coldAt: number | null
   lastRequestAt: number
   lastModel: string | null
   ctx: number
@@ -242,19 +262,20 @@ export function fmtShare(usd: number | null, base: number | null): string {
 }
 
 /**
- * The effect as the status line shows it: the signed money, with the share of
- * the uncached price riding inside the same bracket. The share is what says how
- * good the cache deal is — a read at 7% of uncached input is a bargain however
- * large the context, and the Opus row's 714% says the opposite just as plainly —
- * while the money says what it is worth on the context in hand. An unknown
- * effect is `n/a` and takes no share, because there is no figure to take it of.
+ * The two costs the status line carries: what one read of this context costs
+ * from cache, what the same context costs uncached, and the first as a share of
+ * the second. Both figures are named by their order rather than by a sign, so
+ * the slot cannot be read as a saving when it is a cost — `$0.0047 of $0.07` is
+ * unambiguous where a bare signed figure was not. The share repeats the ratio in
+ * the form that is read fastest. An unknown price is `n/a` and carries neither,
+ * because there is no figure to take a share of.
  */
 function effectSlot(s: State): string {
-  const effect = cacheEffectUsd(s)
-  const money = fmtSignedUsd(effect)
-  const pct = effect == null ? '' : fmtSharePct(warmUsd(s), uncachedUsd(s))
-  if (!pct) return money
-  return money.startsWith('(') ? `(${money.slice(1, -1)}, ${pct})` : `${money}, ${pct}`
+  const warm = warmUsd(s)
+  const uncached = uncachedUsd(s)
+  if (warm == null || uncached == null) return fmtSignedUsd(cacheEffectUsd(s))
+  const pct = fmtSharePct(warm, uncached)
+  return `${fmtUsd(warm)} of ${fmtUsd(uncached)}${pct ? `, ${pct}` : ''}`
 }
 
 /** Everything a fork bills: the cache read, any cache write, uncached input at its own rate, and the output. */
@@ -334,12 +355,30 @@ function warmingText(s: State, now: number): string {
 
 /**
  * What the last ping proved about the provider's expiry clock, in the ping slot
- * it came from: a warm ping after a gap means the clock outlasts that gap. Only
- * the warm outcome appears here — a cold ping stops the window, and its bound is
- * already the stop reason on this same line.
+ * it came from: a warm ping after a gap means the clock outlasts that gap, a
+ * cold one means it does not. Either is worth saying, because either moved the
+ * interval the window will use next.
  */
 function heldText(s: State): string {
-  return s.last?.warm ? ` (held ${fmtDuration(s.last.idle)})` : ''
+  if (!s.last) return ''
+  return s.last.warm ? ` (held ${fmtDuration(s.last.idle)})` : ` (went at ${fmtDuration(s.last.idle)})`
+}
+
+/**
+ * The interval to ping at next, from the bounds the pings have bracketed. The
+ * midpoint of a bracket is the fastest way to close it, and a bracket already
+ * down to the margin settles at the largest gap proven to work, less the margin.
+ *
+ * With no ceiling yet — the first ping came back warm — there is nothing to
+ * search between, so the configured interval stands: it is proven, and the user
+ * picked it as the long end.
+ */
+function retune(s: State): number {
+  const lo = s.warmAt
+  const hi = s.coldAt
+  if (hi == null) return Math.max(MIN_PING_MS, lo || s.every)
+  if (hi - lo <= TUNE_MARGIN_MS) return Math.max(MIN_PING_MS, lo - TUNE_MARGIN_MS)
+  return Math.max(MIN_PING_MS, Math.floor((lo + hi) / 2))
 }
 
 /** When the next ping can come, or null while nothing is armed. */
@@ -672,7 +711,25 @@ async function ping($: EngineInterface, s: State) {
   // to send anyway, so learning it costs nothing extra.
   const idle = now - s.lastRequestAt
   s.last = { at: now, idle, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, usd, warm }
-  if (!warm) return stop($, s, `ping read ${fmtTok(u.cache_read_input_tokens)}, wrote ${fmtTok(u.cache_creation_input_tokens)} (${fmtUsd(usd)}): the cache was gone after ${fmtDuration(idle)} idle, so the provider's TTL is under that`)
+  if (warm) {
+    s.warmAt = Math.max(s.warmAt, idle)
+  } else if (u.cache_creation_input_tokens <= 0) {
+    // Not a cold cache — no cache. The reply neither read an entry nor wrote one,
+    // so this provider is not caching the prefix at all: there is no expiry to
+    // search for, and leaving the window armed would ping on a clock that no
+    // longer advances, once a second, for the rest of it.
+    return stop($, s, `ping read 0, wrote 0 (${fmtUsd(usd)}): the provider cached nothing, so there is no expiry to tune around`)
+  } else {
+    s.coldAt = s.coldAt == null ? idle : Math.min(s.coldAt, idle)
+    // A cache that goes cold inside the shortest interval the window allows is
+    // not a short TTL to search around; the search has run out of room.
+    if (s.coldAt <= MIN_PING_MS) {
+      return stop($, s, `ping read ${fmtTok(u.cache_read_input_tokens)}, wrote ${fmtTok(u.cache_creation_input_tokens)} (${fmtUsd(usd)}): the cache was gone after ${fmtDuration(idle)} idle, and ${fmtDuration(MIN_PING_MS)} is the shortest interval, so there is nothing here to keep warm`)
+    }
+  }
+  s.every = retune(s)
+  await $.store.set(everyKey(s), s.every)
+  // The fork re-sent the prefix, so a cold ping leaves the cache written afresh.
   s.lastRequestAt = now
   await arm($, s)
 }
@@ -685,9 +742,20 @@ function armedText(s: State, now: number, windowMs: number): string {
 
 async function startWindow($: EngineInterface, s: State, windowMs: number, every: number) {
   const now = await $.clock.now()
-  s.every = every
-  if (every === PING_AFTER_MS) await $.store.delete(everyKey(s))
-  else await $.store.set(everyKey(s), every)
+  if (every !== PING_AFTER_MS) {
+    // An interval the user names replaces whatever the pings had bracketed: the
+    // command is the newer word on how often to ping.
+    s.warmAt = 0
+    s.coldAt = null
+    s.every = every
+  } else {
+    // The default defers to the bracket, so a window re-armed in the same session
+    // resumes at the interval the last one learned instead of starting the search
+    // over. The learned interval is written below, so it outlives the session too.
+    s.every = retune(s)
+  }
+  if (s.every === PING_AFTER_MS) await $.store.delete(everyKey(s))
+  else await $.store.set(everyKey(s), s.every)
   s.deadline = now + windowMs
   s.stopped = null
   await $.store.set(deadlineKey(s), s.deadline)
@@ -804,7 +872,7 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
 
 export function freshState(): State {
   return {
-    sid: '', deadline: 0, every: PING_AFTER_MS, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
+    sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
     guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0,
     readSession: 0, turns: 0, owns: false,
     window: 0, percent: 0, windowSource: null, free: 0, compactAt: null,

@@ -21,10 +21,10 @@ const DEADLINE_KEY = 'token-tax-weather:deadline:S1'
 // The idle footer: what the costing is based on while nothing is armed. Before
 // the first turn the engine has told this mod no model, and the line says so.
 const NO_MODEL_FOOTER = 'off · no context yet'
-const IDLE_FOOTER = 'off · ctx 200.5k · cache 200k this turn · ($0.08, 7%)'
+const IDLE_FOOTER = 'off · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%'
 // The line where the band is raised: the band carries the readout, so this slot
 // carries the warming state, signed money, and hints.
-const HINT_FOOTER = 'keepwarm off · ($0.08, 7%) · /keepwarm to arm the window · /cache-tax for the full card'
+const HINT_FOOTER = 'keepwarm off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card'
 const NO_CONTEXT_HINT_FOOTER = 'keepwarm off · /keepwarm to arm the window · /cache-tax for the full card'
 
 // The band above the prompt is raised on `desktop` and `terminal` only, so the
@@ -305,7 +305,7 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · ($0.08, 7%)')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
   })
 
   test('an armed window says so when it has no rates for the model', async ($, on) => {
@@ -326,7 +326,7 @@ describe('warming', () => {
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · ($0.08, 7%)')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
     await clock.advance(60 * MIN)
     await $.command.run(run('keepwarm', 'off'))
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
@@ -339,7 +339,7 @@ describe('warming', () => {
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 141912 }) }))
     // Whole-thousands rounding would print both of these as 300k and 142k and
     // make the cache read look like half the context by coincidence of rounding.
-    expect(w.status.at(-1)).toBe('off · ctx 299.9k · cache 141.9k this turn · ($0.12, 7%)')
+    expect(w.status.at(-1)).toBe('off · ctx 299.9k · cache 141.9k this turn · $0.0090 of $0.13, 7%')
   })
 
   test("the Original Mod's settings keys arm nothing", async ($, on) => {
@@ -478,7 +478,7 @@ describe('pinging', () => {
     expect(card.text).toMatch(/last ping   read 200k from cache, wrote 0, \$0\.0060 \(warm after 50m idle, so the provider's TTL is at least that\)/)
   })
 
-  test('a cold ping records the same gap, and says the TTL is the reason', async ($, on) => {
+  test('a cold ping halves the interval and carries on, rather than ending the window', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const w = world(on, { forks: [{ read: 0, write: 102800 }] })
     await $.session.start(session)
@@ -486,9 +486,59 @@ describe('pinging', () => {
     await $.command.run(run('keepwarm', '6h'))
     await clock.advance(50 * MIN + 1)
     await flush()
-    expect(w.status.at(-1)).toMatch(/^stopped: ping read 0, wrote 102\.8k \(\$0\.0000\): the cache was gone after 50m idle, so the provider's TTL is under that/)
+    // The ceiling is now 50m and the floor is still nothing, so the midpoint is
+    // half of it — and the window is still armed, because the rewrite the ping
+    // just paid for has already been paid.
+    expect(w.status.at(-1)).toBe('5h10m left · ping in 25m (went at 50m) · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
     const card = await $.command.run(run('cache-tax', ''))
     expect(card.text).toMatch(/last ping   read 0 from cache, wrote 102\.8k, \$0\.0000 \(the cache was gone after 50m idle, so the provider's TTL is under that\)/)
+  })
+
+  // The search closes on the TTL from both sides. Halving alone would stop at the
+  // first gap that happened to work, so a TTL of 45m reached through a cold 50m
+  // would leave the window pinging at 25m for as long as it was armed.
+  test('a warm ping after a cold one bisects upward, not back down', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, {
+      forks: [{ read: 0, write: 102800 }, { read: 200000, write: 0 }],
+    })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    await clock.advance(50 * MIN + 1)
+    await flush()
+    expect(w.status.at(-1)).toContain('ping in 25m (went at 50m)')
+    // Warm at 25m: the floor moves to 25m while the ceiling stays at 50m, so the
+    // next probe is the midpoint of the two, not a second halving to 12m.
+    await clock.advance(25 * MIN + 1)
+    await flush()
+    expect(w.forks).toEqual([WARM_PROMPT, WARM_PROMPT])
+    // The midpoint of 25m and 50m is 37.5m, which the row rounds to the minute.
+    expect(w.status.at(-1)).toContain('ping in 38m (held 25m)')
+  })
+
+  test('a provider that caches nothing stops the window rather than pinging on', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, { forks: [{ read: 0, write: 0 }] })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    await clock.advance(50 * MIN + 1)
+    await flush()
+    // Neither read nor written: this is not a cold cache but an absent one, so
+    // there is no TTL to search for.
+    expect(w.status.at(-1)).toMatch(/^stopped: ping read 0, wrote 0 \(\$0\.0000\): the provider cached nothing, so there is no expiry to tune around/)
+  })
+
+  test('an interval already at the floor stops rather than pinging at it', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, { forks: [{ read: 0, write: 102800 }] })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h every 1m'))
+    await clock.advance(MIN + 1)
+    await flush()
+    expect(w.status.at(-1)).toMatch(/^stopped: ping read 0, wrote 102\.8k \(\$0\.0000\): the cache was gone after 1m idle, and 1m is the shortest interval, so there is nothing here to keep warm/)
   })
 
   test('a warm ping says on the line what its gap proved about the provider TTL', async ($, on) => {
@@ -513,7 +563,7 @@ describe('pinging', () => {
     await $.command.run(run('keepwarm', '6h'))
     await clock.advance(50 * MIN + 1)
     await flush()
-    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · cache 200k this turn · ($0.08, 7%)')
+    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
   })
 })
 
@@ -556,12 +606,13 @@ describe('user-supplied rates', () => {
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: 'claude-opus-5-5' }) }))
     const result = await $.command.run(run('cache-tax', ''))
-    expect(result.text).toMatch(/cost        for 200\.5k tokens   no cache \$0\.0001 = 100%/)
-    // A read rate seven times the input rate, which the share makes plain: the
-    // cache is not a saving here, and the figure says so without a rate table.
-    expect(result.text).toMatch(/from cache \$0\.0010 = 714% of that/)
-    // At these figures a cache read costs more than the same context uncached,
-    // so warming is a net loss — the card must not imply otherwise.
+    expect(result.text).toMatch(/cost        for 200\.5k tokens   no cache \$0\.0070 = 100%/)
+    // The Opus read rate is about a seventh of its input rate, which the share
+    // makes plain: the cache is a saving here, and the figure says so without a
+    // rate table being read.
+    expect(result.text).toMatch(/from cache \$0\.0010 = 14% of that/)
+    // Its write rate is still zero, so a cold re-write is billed at nothing and
+    // warming is a net cost — the card must not imply otherwise.
     expect(result.text).toMatch(/warming cannot pay for itself at these rates/)
     expect(result.text).not.toMatch(/0\.43/)
     expect(result.text).not.toMatch(/USD\/MTok/)
@@ -646,19 +697,22 @@ describe('the band above the prompt', () => {
     const band = await bandOf($)
     expect(band?.text).not.toContain('($0.12)')
     expect(band?.text).not.toMatch(/[-+]\$/)
-    expect(w.status.at(-1)).toBe('keepwarm off · ($0.12, 7%) · /keepwarm to arm the window · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('keepwarm off · $0.0090 of $0.13, 7% · /keepwarm to arm the window · /cache-tax for the full card')
   })
 
-  test('a surcharge reports signed money on status, not on the band', async ($, on) => {
+  // No row in the table has a read rate above its input rate any more, so the
+  // surcharge shape is reached through the formatter's own test rather than
+  // through a model. This one holds the two-figure slot on the second model.
+  test('the second model reports its own two costs on status, and no money on the band', async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on, { model: 'claude-opus-5-5', live: { tokens: 299912 }, rawMax: 362000 })
     await $.session.start(bandSession)
     await $.turn.complete(turn({ usage: usage({ model: 'claude-opus-5-5' }) }))
-    // Opus reads at 0.005 against an input of 0.0007, so the cache raises it.
+    // Opus reads at 0.005 against an input of 0.0348, so the cache lowers it.
     const band = await bandOf($)
-    expect(band?.text).not.toContain('+$0.0013')
+    expect(band?.text).not.toContain('$0.0015')
     expect(band?.text).not.toMatch(/[-+]\$/)
-    expect(w.status.at(-1)).toBe('keepwarm off · +$0.0013, 714% · /keepwarm to arm the window · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('keepwarm off · $0.0015 of $0.01, 14% · /keepwarm to arm the window · /cache-tax for the full card')
   })
 
   test('a survey holds the band, and the hook yields to it', async ($, on) => {
@@ -877,7 +931,7 @@ describe('the line the band frees', () => {
     await $.command.run(run('keepwarm', '6h'))
     // Armed and warm: a ping is already coming, so there is nothing to suggest
     // and the line does not invent one.
-    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · ($0.08, 7%) · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
   })
 
   test('a window that stopped says why, and offers to start another', async ($, on) => {
@@ -892,7 +946,7 @@ describe('the line the band frees', () => {
     await clock.advance(51 * MIN)
     await flush()
     expect(w.status.at(-1)).toBe(
-      'keepwarm stopped: ping not sent (nothing-to-fork) · ($0.08, 7%) · /keepwarm to arm the window · /cache-tax for the full card',
+      'keepwarm stopped: ping not sent (nothing-to-fork) · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card',
     )
   })
 
@@ -977,11 +1031,11 @@ describe('approved band and status split', () => {
     expect(band?.text).not.toMatch(/keepwarm|ping|left|\$|\/keepwarm|\/cache-tax/)
 
     // 2. Status unarmed: keepwarm off · signed effect · /keepwarm to arm the window · /cache-tax for the full card
-    expect(w.status.at(-1)).toBe('keepwarm off · ($0.08, 7%) · /keepwarm to arm the window · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('keepwarm off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card')
 
     // 3. Status armed: keepwarm on · <duration> left · [ping] · signed effect · /cache-tax for the full card
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · ($0.08, 7%) · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
     // Separate state and countdown with middot not comma
     expect(w.status.at(-1)).not.toContain('keepwarm on,')
   })
