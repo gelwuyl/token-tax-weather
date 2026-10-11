@@ -5,6 +5,7 @@ import type {
   EngineInterface,
   Register,
   RenderElement,
+  RenderSurface,
   SettingsReadArgs,
   SettingsSource,
   TextProps,
@@ -288,12 +289,12 @@ function nextPingText(s: State, now: number): string | null {
 // The under-composer line, in one fixed field order so the same fact always
 // appears in the same place — durations first, then token counts, then money:
 //
-//   <warming> · [ping] · <context> · [cached] · [±]
+//   <warming> · [ping] · <context> · [read] · [±]
 //
 // warming  off | <time> left | stopped: <why>
 // ping     present only while a window is armed
 // context  no context yet | ctx <tokens> — what the cache could be holding
-// cached   absent until a turn reports a cache read: what it actually served
+// read     absent until a turn reports a cache read: how much it read this turn
 // final    absent until a context exists: what the cache does to the bill for
 //          this context, bare and signed. `-` is a saving — the read rate is
 //          below the input rate, so being warm lowers the bill by that much (the
@@ -310,7 +311,7 @@ function statusText(s: State, now: number): string {
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
   parts.push(s.ctx > 0 ? `ctx ${fmtTok(s.ctx)}` : 'no context yet')
-  if (s.lastRead > 0) parts.push(`cached ${fmtTok(s.lastRead)}`)
+  if (s.lastRead > 0) parts.push(`read ${fmtTok(s.lastRead)} this turn`)
   if (s.ctx > 0) {
     const effect = cacheEffectUsd(s)
     parts.push(effect == null ? 'n/a' : fmtSignedUsd(effect))
@@ -436,7 +437,7 @@ function band(
   if (spark) parts.push(dim('  ·  '), t({ color: f.color }, spark))
   const trend = columns >= 72 ? trendText(s.history) : null
   if (trend) parts.push(dim(`  ·  ${trend}`))
-  if (s.lastRead > 0) parts.push(dim(`  ·  cached ${fmtTok(s.lastRead)}`))
+  if (s.lastRead > 0) parts.push(dim(`  ·  read ${fmtTok(s.lastRead)} this turn`))
   parts.push(dim(`  ·  ${warmingText(s, now)}`))
   const ping = nextPingText(s, now)
   if (ping) parts.push(dim(` · ${ping}`))
@@ -481,7 +482,28 @@ function band(
 // draw the readout: the same thing is never said twice. A live notice is not the
 // readout — it is pinned wherever it is set, the band's own surfaces included, and
 // it takes the line until the turn that raised it is over.
+//
+// Which surface this is cannot be read from the one captured at session start: a
+// desktop client can attach a moment after that event, when `e.surface` was still
+// null and the captured value became `''`, and the band it raises is up now. So
+// the decision is made from the live roster each time the line is painted.
 const BAND_SURFACES = new Set(['desktop', 'terminal'])
+
+/**
+ * The surfaces the session draws on right now, so the band's reach is read fresh
+ * rather than from the one frozen at session start: a client can attach after
+ * that, when `e.surface` was still null. Null means the ask failed; the engine's
+ * `surfaces()` is documented never to reject, but a host that answers nothing is
+ * told apart from an empty roster so a caller can fall back rather than mistake
+ * silence for "nothing draws".
+ */
+async function liveSurfaces($: EngineInterface): Promise<readonly RenderSurface[] | null> {
+  try {
+    return await $.session.surfaces()
+  } catch {
+    return null
+  }
+}
 
 // The one place that writes the status line, so a notice and the readout never
 // race each other for it. A live notice outranks everything and shows on every
@@ -498,8 +520,12 @@ async function publish($: EngineInterface, s: State) {
   }
   // With no notice the band says all of it in colour, so the status line is
   // cleared rather than left stale — which is also what takes a finished notice
-  // off the screen.
-  if (BAND_SURFACES.has(s.surface)) {
+  // off the screen. Whether the band is up is asked fresh; when the ask fails the
+  // captured surface is the last honest word, so a silent host never hides the
+  // readout by accident.
+  const live = await liveSurfaces($)
+  const raised = live ? live.some(surface => BAND_SURFACES.has(surface)) : BAND_SURFACES.has(s.surface)
+  if (raised) {
     $.ui.status(undefined)
     return
   }
@@ -618,7 +644,7 @@ function windowNote(s: State): string {
   }
 }
 
-function card(s: State, now: number): string {
+function card(s: State, now: number, surfaces: readonly RenderSurface[] | null): string {
   const lines: string[] = []
   const r = ratesFor(s.lastModel)
   lines.push(`${s.lastModel ?? 'model not seen yet'}`)
@@ -628,10 +654,21 @@ function card(s: State, now: number): string {
   else lines.push(`state       warm, ${fmtDuration(s.lastRequestAt + TTL_MS - now)} left`)
   lines.push(`context     ${s.ctx.toLocaleString('en-US')} tokens, the most the cache can be holding`)
   lines.push(`window      ${s.window ? `${fmtTok(s.window)} (${s.percent}% used)` : 'not reported yet'}${windowNote(s)}`)
-  // What the cache actually served last turn, rather than what it might hold.
-  if (s.lastRead > 0 && s.ctx > 0) {
-    const share = Math.min(100, Math.round((100 * s.lastRead) / s.ctx))
-    lines.push(`cache read  ${s.lastRead.toLocaleString('en-US')} tokens served from cache last turn (${share}% of context)`)
+  // Both surfaces, so the next session can see what the start value actually was
+  // against what the session draws on now — the pair that decides the status line.
+  const live = surfaces == null ? 'unavailable' : surfaces.length ? surfaces.join(', ') : '(none)'
+  lines.push(`surfaces    captured ${s.surface || '(none)'} · live ${live}`)
+  // What the cache read this turn, not a size it holds: a turn's usage is its
+  // model calls summed, so a long agentic turn reads the context once per call
+  // and the total can run to many times the context it was reading.
+  if (s.lastRead > 0) {
+    const total = `${s.lastRead.toLocaleString('en-US')} tokens read from cache this turn`
+    if (s.ctx > 0 && s.lastRead >= 2 * s.ctx) {
+      const multiple = Math.round(s.lastRead / s.ctx)
+      lines.push(`cache read  ${total}, ≈${multiple} × the ${fmtTok(s.ctx)} context — one read per model call`)
+    } else {
+      lines.push(`cache read  ${total}`)
+    }
   } else if (s.lastRequestAt) {
     lines.push('cache read  none reported by the last turn, so nothing was served from cache')
   }
@@ -930,7 +967,7 @@ export const register: Register = on => {
     if (words[0] === 'guard') {
       return { text: 'guard is warn only. This mod shows the cold price and sends your prompt anyway; it never drops one.' }
     }
-    return { text: card(s, now) }
+    return { text: card(s, now, await liveSurfaces($)) }
   })
 
   on('command.run', { command: 'cache-tax-diagnostic' }, async $ => {

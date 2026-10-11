@@ -11,7 +11,7 @@ the prompt:
   plain input rate and it is costing you instead.
 
 ```
-☂  Showers  55% of 362k  ·  ▃▄▅▅▆▇  ·  ▲ +12k last turn  ·  cached 141.9k  ·  6h00m left · ping in 50m  ·  -$0.12
+☂  Showers  55% of 362k  ·  ▃▄▅▅▆▇  ·  ▲ +12k last turn  ·  read 141.9k this turn  ·  6h00m left · ping in 50m  ·  -$0.12
 ```
 
 To the left is the weather; to the right, the tax.
@@ -71,12 +71,18 @@ say is dropped rather than left blank. Against a 362k window (the size
 `/autocompact` fires on, not the model's raw limit) the five forecasts read:
 
 ```text
-☀  Clear         18% of 362k · ▁▁▂▁▂▁▂▂▁▂▂▁ · ▼ 4k last turn · cached 62.1k · off · -$0.03
-☁  Cloudy        37% of 362k · ▂▃▃▄▃▄▄▅▄▄▃▄ · steady · cached 128.9k · off · -$0.05
-☂  Showers       55% of 362k · ▄▄▅▅▆▅▆▆▅▆▆▇ · ▲ +12k last turn · cached 190.4k · 6h00m left · ping in 50m · -$0.08
-☇  Storm         82% of 362k · ▆▇▆▇█▇▇█▇▆▇█ · ▲ +40k last turn · cached 281.2k · off · -$0.12
-↯  Compact soon  95% of 362k · ███████▇████ · ▲ +60k last turn · cached 320.5k · off · -$0.14
+☀  Clear         18% of 362k · ▁▁▂▁▂▁▂▂▁▂▂▁ · ▼ 4k last turn · read 62.1k this turn · off · -$0.03
+☁  Cloudy        37% of 362k · ▂▃▃▄▃▄▄▅▄▄▃▄ · steady · read 128.9k this turn · off · -$0.05
+☂  Showers       55% of 362k · ▄▄▅▅▆▅▆▆▅▆▆▇ · ▲ +12k last turn · read 190.4k this turn · 6h00m left · ping in 50m · -$0.08
+☇  Storm         82% of 362k · ▆▇▆▇█▇▇█▇▆▇█ · ▲ +40k last turn · read 281.2k this turn · off · -$0.12
+↯  Compact soon  95% of 362k · ███████▇████ · ▲ +60k last turn · read 320.5k this turn · off · -$0.14
 ```
+
+An agentic turn makes many model calls, and each one reads the context again, so
+`read` is the **turn's total across all of them** — a fourteen-call turn over a
+155k context reports about `read 2.2M this turn`, several times the context it was
+reading. That is not the cache growing: the cache holds one context. `/cache-tax`
+divides the total by the context and reports the multiple.
 
 - **`☀ Clear`** under 25%, **`☁ Cloudy`** under 50%, **`☂ Showers`** under 75%,
   **`☇ Storm`** under 90%, **`↯ Compact soon`** at 90% and above — coloured
@@ -85,10 +91,12 @@ say is dropped rather than left blank. Against a 362k window (the size
   the share of the window at that reading.
 - **The trend** is the change since the reading before: `▲ +12k last turn`,
   `▼ 4k last turn`, or `steady`. Absent until there are two readings to compare.
-- **`cached 128.9k`** is what the last turn actually served from cache. That is a
-  different measurement from the context figure beside it — one is what the cache
-  *could* hold, the other what it *did* serve — so the two are never conflated,
-  and the slot is absent when the last turn reported no cache read at all.
+- **`read 128.9k this turn`** is how much the cache actually served this turn, as
+  against the context figure beside it, which is only what the cache *could* be
+  holding. The two are deliberately different measurements and are never
+  conflated — but note that `read` counts every model call the turn made, so on a
+  long agentic turn it multiplies, while the context does not. The slot is absent
+  when the turn served nothing from cache.
 - **`off`** is the warming slot: no window is armed. `/keepwarm` replaces it with
   a countdown, `6h00m left`, and adds `ping in 50m` while a window is running.
 - **The final figure** is the cache's effect on the bill for this context. See
@@ -104,13 +112,13 @@ narrow band is a shorter band rather than a wrapped one:
 | --- | --- |
 | under 56 columns | the sparkline |
 | under 72 columns | the trend |
-| always | nothing else — the cache read, the warming state and the price are never dropped |
+| always | nothing else — the read, the warming state and the price are never dropped |
 
 A slot can also be missing for want of data rather than width: the sparkline needs
-a completed reading, the trend needs two, and the cache read appears only once a
-turn has actually served something from cache. The two are told apart by what is
-still there — a band with no `cached` slot is reporting that the last turn served
-nothing, since that slot is never dropped for width.
+a completed reading, the trend needs two, and the read appears only once a turn
+has actually served something from cache. The two are told apart by what is still
+there — a band with no `read` slot is reporting that the last turn served nothing,
+since that slot is never dropped for width.
 
 ### The same states on the status line
 
@@ -123,17 +131,17 @@ On the surfaces that raise no band the same facts fall back to the status line,
 without colour and in a fixed order:
 
 ```text
-off · ctx 133.9k · cached 128.9k · -$0.05
-6h00m left · ping in 50m · ctx 133.9k · cached 128.9k · -$0.05
-6h00m left · ping after first turn · ctx 133.9k · cached 128.9k · -$0.05
-6h00m left · ping after next turn · ctx 133.9k · cached 128.9k · -$0.05
+off · ctx 133.9k · read 128.9k this turn · -$0.05
+6h00m left · ping in 50m · ctx 133.9k · read 128.9k this turn · -$0.05
+6h00m left · ping after first turn · ctx 133.9k · read 128.9k this turn · -$0.05
+6h00m left · ping after next turn · ctx 133.9k · read 128.9k this turn · -$0.05
 off · ctx 133.9k · -$0.05
 off · no context yet
 ```
 
-The order is warming, ping, context, cache read, effect. The context appears as a
-token count rather than a percentage, because there is no room for the window
-beside it, and the sparkline and trend are dropped entirely. The two `ping after`
+The order is warming, ping, context, read, effect. The context appears as a token
+count rather than a percentage, because there is no room for the window beside it,
+and the sparkline and trend are dropped entirely. The two `ping after`
 forms stand in for the countdown while there is no reading to count from — before
 this session's first turn, and after the cache has gone cold.
 

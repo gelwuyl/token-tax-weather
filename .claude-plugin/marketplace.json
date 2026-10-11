@@ -9,7 +9,7 @@
     {
       "name": "token-tax-weather",
       "description": "A coloured forecast of how full the context window is, beside what the prompt cache is doing to the bill: /keepwarm, a warn-only guard that never drops a prompt, no automatic warming, and costs from user-supplied rates.",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "category": "productivity",
       "source": "./token-tax-weather"
     }

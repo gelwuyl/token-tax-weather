@@ -21,7 +21,7 @@ const DEADLINE_KEY = 'token-tax-weather:deadline:S1'
 // The idle footer: what the costing is based on while nothing is armed. Before
 // the first turn the engine has told this mod no model, and the line says so.
 const NO_MODEL_FOOTER = 'off · no context yet'
-const IDLE_FOOTER = 'off · ctx 200.5k · cached 200k · -$0.08'
+const IDLE_FOOTER = 'off · ctx 200.5k · read 200k this turn · -$0.08'
 
 // The band above the prompt is raised on `desktop` and `terminal` only, so the
 // shared session is a `vscode` one: the status line is the fallback there, and
@@ -67,6 +67,13 @@ function world(on: On, opts: {
   /** When set, `{ breakdown }` answers a compaction window of this size. */
   rawMax?: number
   autocompactSource?: string
+  /**
+   * What the live `$.session.surfaces()` reports. Left out, it mirrors the one
+   * surface `$.session.start` was handed, as the engine documents: the start
+   * event's `e.surface` is `$.session.surfaces()[0]`. Give it to model a client
+   * attaching after start — the roster the band's reach is read from.
+   */
+  surfaces?: readonly RenderSurface[]
 } = {}) {
   const store = opts.store
   const sets: string[] = []
@@ -85,7 +92,9 @@ function world(on: On, opts: {
   const entered: string[] = []
   const commands: CommandSpec[] = []
   const forkScript = opts.forks ?? []
-  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  let startSurface: RenderSurface | null = null
+  on('session.start', ($, e) => { startSurface = e.surface; return { cwd: e.cwd } })
+  on('session.surfaces', () => ({ value: opts.surfaces ?? (startSurface ? [startSurface] : []) }))
   on('session.id', () => ({ value: opts.sid ?? 'S1' }))
   on('session.model', () => ({ value: opts.model ?? MODEL }))
   const window = opts.window ?? 1000000
@@ -258,7 +267,7 @@ describe('warming', () => {
     const w = world(on, { model: UNCONFIGURED })
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
-    expect(w.status.at(-1)).toBe('off · ctx 200.5k · cached 200k · n/a')
+    expect(w.status.at(-1)).toBe('off · ctx 200.5k · read 200k this turn · n/a')
   })
 
   test('a configured model carries no unpriced flag', async ($, on) => {
@@ -288,7 +297,7 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cached 200k · -$0.08')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · read 200k this turn · -$0.08')
   })
 
   test('an armed window says so when it has no rates for the model', async ($, on) => {
@@ -297,7 +306,7 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cached 200k · n/a')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · read 200k this turn · n/a')
   })
 
   test('the fields keep their order whatever the state', async ($, on) => {
@@ -309,7 +318,7 @@ describe('warming', () => {
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cached 200k · -$0.08')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · read 200k this turn · -$0.08')
     await clock.advance(60 * MIN)
     await $.command.run(run('keepwarm', 'off'))
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
@@ -322,7 +331,7 @@ describe('warming', () => {
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 141912 }) }))
     // Whole-thousands rounding would print both of these as 300k and 142k and
     // make the cache read look like half the context by coincidence of rounding.
-    expect(w.status.at(-1)).toBe('off · ctx 299.9k · cached 141.9k · -$0.12')
+    expect(w.status.at(-1)).toBe('off · ctx 299.9k · read 141.9k this turn · -$0.12')
   })
 
   test("the Original Mod's settings keys arm nothing", async ($, on) => {
@@ -454,7 +463,7 @@ describe('pinging', () => {
     await $.command.run(run('keepwarm', '6h'))
     await clock.advance(50 * MIN + 1)
     await flush()
-    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · cached 200k · -$0.08')
+    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · read 200k this turn · -$0.08')
   })
 })
 
@@ -620,6 +629,93 @@ describe('the band above the prompt', () => {
     world(on, { window: 0 })
     await $.session.start(bandSession)
     expect(await bandOf($)).toBe(null)
+  })
+})
+
+// The surface that decides the status line is asked fresh each paint, not read
+// from the one frozen at session start: a client can attach after that event,
+// when `e.surface` was still null. The captured value is still reported, so the
+// card's own line keeps the pair distinct.
+describe('the live surface roster decides the status line', () => {
+  test('a live desktop surface leaves the line empty even when the captured surface is empty', async ($, on) => {
+    mock.clock(on, { now: START })
+    // A client attached after start: the start event saw no surface, the roster now says desktop.
+    const w = world(on, { live: { tokens: 200000 }, surfaces: ['desktop'] })
+    await $.session.start({ ...session, surface: null })
+    await $.turn.complete(turn())
+    expect(w.status.filter(Boolean)).toEqual([])
+  })
+
+  test('a live vscode surface draws the readout', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { surfaces: ['vscode'] })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toBe(IDLE_FOOTER)
+  })
+
+  test('a session drawing on several surfaces at once leaves it empty', async ($, on) => {
+    mock.clock(on, { now: START })
+    // A terminal and a phone: the band is up on the terminal, so the readout stays off the line.
+    const w = world(on, { live: { tokens: 200000 }, surfaces: ['terminal', 'vscode'] })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    expect(w.status.filter(Boolean)).toEqual([])
+  })
+})
+
+// A turn's usage is its model calls summed, so the cache read is a quantity read
+// this turn, never a size the cache holds. Both the readout and the card must
+// say so.
+describe('the cache read is a per-turn quantity, not a size held', () => {
+  test("the readout labels the read as this turn's, never as a cache size", async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toMatch(/· read 200k this turn ·/)
+    expect(w.status.join('\n')).not.toMatch(/cached/)
+  })
+
+  test('the card derives the honest multiple from a long agentic turn', async ($, on) => {
+    mock.clock(on, { now: START })
+    // ~14 model calls over a 155.2k context: the summed read of 2.2M is impossible
+    // to hold, so the card reports it as the turn's total, not a held size.
+    world(on, { live: { tokens: 155200 } })
+    await $.session.start(session)
+    await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 2200000 }) }))
+    const text = (await $.command.run(run('cache-tax', ''))).text
+    expect(text).toMatch(/cache read  2,200,000 tokens read from cache this turn, ≈14 × the 155\.2k context/)
+    // The old line claimed a share of context and capped it at 100%; that claim is gone.
+    expect(text).not.toMatch(/% of context/)
+  })
+
+  test('a single-call turn says the read plainly, with no noisy ≈1 ×', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    const text = (await $.command.run(run('cache-tax', ''))).text
+    expect(text).toMatch(/cache read  200,000 tokens read from cache this turn/)
+    expect(text).not.toMatch(/≈1 ×/)
+  })
+})
+
+describe('the card reports both surfaces', () => {
+  test('the surfaces line names the captured surface and the live roster', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 }, surfaces: ['desktop', 'vscode'] })
+    await $.session.start(session)
+    const text = (await $.command.run(run('cache-tax', ''))).text
+    expect(text).toMatch(/surfaces    captured vscode · live desktop, vscode/)
+  })
+
+  test('the surfaces line reads sensibly when both are empty', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 }, surfaces: [] })
+    await $.session.start({ ...session, surface: null })
+    const text = (await $.command.run(run('cache-tax', ''))).text
+    expect(text).toMatch(/surfaces    captured \(none\) · live \(none\)/)
   })
 })
 
