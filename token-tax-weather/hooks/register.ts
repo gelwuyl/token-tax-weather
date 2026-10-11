@@ -88,6 +88,15 @@ export type State = {
   stopped: string | null
   /** Cache-read tokens of the last completed main turn: what the cache actually served. */
   lastRead: number
+  /**
+   * Cache-read tokens summed over every main turn since the last /clear: the
+   * running total, where `lastRead` is only the turn just gone. A compaction does
+   * not start a new conversation, so it survives `session.compact` the same way
+   * the cold-write tally below does; only /clear resets it.
+   */
+  readSession: number
+  /** Completed main turns since the last /clear: what `readSession` was summed over. */
+  turns: number
   /** True once this mod's command names are the session's, so the footer slot is ours to write. */
   owns: boolean
   /** The window the fill is measured against: the compaction window /autocompact sets, else the model's. */
@@ -248,6 +257,8 @@ export function resetForClear(s: State) {
   s.coldWritePending = false
   s.misses = []
   s.lastRead = 0
+  s.readSession = 0
+  s.turns = 0
   s.percent = 0
   s.history = []
   s.notice = null
@@ -317,6 +328,44 @@ function statusText(s: State, now: number): string {
     parts.push(effect == null ? 'n/a' : fmtSignedUsd(effect))
   }
   return parts.join(' · ')
+}
+
+// The commands worth running right now, so the line can name the next move
+// rather than only report. With nothing armed a window can be started, and that
+// is the whole point of the line; armed and warm there is nothing to suggest,
+// because a ping is already coming. The card is always last — it is where the
+// figures this line abbreviates are spelled out, so it is the one command that is
+// always worth running.
+//
+// A cold cache gets no clause of its own. It cannot: on a surface that raises the
+// band, going cold is never what repaints this line — the first thing a person
+// does after the cache lapses is send a prompt, and the guard notice takes the
+// slot for that turn. So `/keepwarm` is offered for the state that is actually
+// on screen, which is the same command either way.
+function hintsFor(s: State): string[] {
+  const hints: string[] = []
+  if (!s.deadline) hints.push('/keepwarm to arm the window')
+  hints.push('/cache-tax for the full card')
+  return hints
+}
+
+// The line for a surface the band already reaches: the band carries the readout
+// in colour, so this says only what the band does not — whether warming is on,
+// when the next ping comes, and what to run next. The state is spelled out as
+// `keepwarm on` / `keepwarm off` rather than the bare countdown the readout uses,
+// so the line stands on its own wherever it is read without the band. A window
+// that stopped says why: the reason is the difference between a window that was
+// never armed and one that was and gave up, and the slot hovers, so the length of
+// it costs nothing.
+function hintText(s: State, now: number): string {
+  const parts = [s.stopped
+    ? `keepwarm stopped: ${s.stopped}`
+    : s.deadline ? `keepwarm on, ${fmtDuration(s.deadline - now)} left` : 'keepwarm off']
+  // The ping is the readout's own clause; it follows the state only while a
+  // window is armed, which is the only state it has anything to say in.
+  const ping = nextPingText(s, now)
+  if (ping) parts.push(ping)
+  return [...parts, ...hintsFor(s)].join(' · ')
 }
 
 function disarm(s: State) {
@@ -438,6 +487,10 @@ function band(
   const trend = columns >= 72 ? trendText(s.history) : null
   if (trend) parts.push(dim(`  ·  ${trend}`))
   if (s.lastRead > 0) parts.push(dim(`  ·  read ${fmtTok(s.lastRead)} this turn`))
+  // The running total, beside the turn it continues: a turn's read is the figure
+  // that moves, the session's is the one that adds up to what the cache has
+  // served you since /clear.
+  if (s.readSession > 0) parts.push(dim(`  ·  read ${fmtTok(s.readSession)} this session`))
   parts.push(dim(`  ·  ${warmingText(s, now)}`))
   const ping = nextPingText(s, now)
   if (ping) parts.push(dim(` · ${ping}`))
@@ -477,11 +530,13 @@ function band(
 // surface is still attaching.
 //
 // The band above the prompt is raised on the desktop and terminal surfaces only,
-// and where it is raised it carries the readout in colour. So the status line is
-// the fallback for the surfaces the band never reaches, and the two never both
-// draw the readout: the same thing is never said twice. A live notice is not the
-// readout — it is pinned wherever it is set, the band's own surfaces included, and
-// it takes the line until the turn that raised it is over.
+// and where it is raised it carries the readout in colour. The slot here is then
+// free to say what the band does not — whether warming is on and what to run — so
+// the readout is never said twice: where the band is up the line is the state and
+// the hints together, and where it is not the line carries the readout with the
+// hints after it. A live notice is not the readout — it is pinned wherever it is
+// set, the band's own surfaces included, and it takes the line until the turn
+// that raised it is over.
 //
 // Which surface this is cannot be read from the one captured at session start: a
 // desktop client can attach a moment after that event, when `e.surface` was still
@@ -518,18 +573,19 @@ async function publish($: EngineInterface, s: State) {
     $.ui.status(s.notice)
     return
   }
-  // With no notice the band says all of it in colour, so the status line is
-  // cleared rather than left stale — which is also what takes a finished notice
-  // off the screen. Whether the band is up is asked fresh; when the ask fails the
-  // captured surface is the last honest word, so a silent host never hides the
-  // readout by accident.
+  // With no notice the line is painted from the surfaces, and which of the two
+  // forms it takes is decided by whether the band is up. Where the band is up it
+  // carries the readout, so the line is free to say what the band does not — the
+  // warming state and the command worth running. Where there is no band the
+  // readout has to be on this line, and the hints are left off rather than
+  // appended: that line is already the longest the slot has to hold, and a hint
+  // that pushes the price off the end costs more than it adds. Repainting is also
+  // what takes a finished notice off the screen. Whether the band is up is asked
+  // fresh; when the ask fails the captured surface is the last honest word, so a
+  // silent host never hides the readout by accident.
   const live = await liveSurfaces($)
   const raised = live ? live.some(surface => BAND_SURFACES.has(surface)) : BAND_SURFACES.has(s.surface)
-  if (raised) {
-    $.ui.status(undefined)
-    return
-  }
-  $.ui.status(statusText(s, s.now))
+  $.ui.status(raised ? hintText(s, s.now) : statusText(s, s.now))
 }
 
 // The window and its ping period belong to the session that armed them, so a
@@ -672,6 +728,11 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   } else if (s.lastRequestAt) {
     lines.push('cache read  none reported by the last turn, so nothing was served from cache')
   }
+  // The running total and what it was summed over, so the figure on the band is
+  // one command away from being checkable rather than taken on trust.
+  if (s.turns > 0) {
+    lines.push(`session read  ${s.readSession.toLocaleString('en-US')} tokens served from cache over ${s.turns} turn${s.turns === 1 ? '' : 's'} since /clear`)
+  }
   if (r) {
     lines.push(`unit prices input ${r.input} · read ${r.cacheRead} · write ${r.cacheWrite} · output ${r.output} USD/MTok (${RATE_SOURCE}; prices, not costs)`)
     lines.push(`for ${fmtTok(s.ctx)} tokens   re-write ${fmtUsd(coldUsd(s))} (write rate) · from cache ${fmtUsd(warmUsd(s))} (read rate) · no cache ${fmtUsd(uncachedUsd(s))} (input rate)`)
@@ -699,7 +760,8 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
 export function freshState(): State {
   return {
     sid: '', deadline: 0, every: PING_AFTER_MS, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
-    guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0, owns: false,
+    guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0,
+    readSession: 0, turns: 0, owns: false,
     window: 0, percent: 0, windowSource: null, history: [], now: 0, surface: '', notice: null,
   }
 }
@@ -1021,8 +1083,13 @@ export const register: Register = on => {
       const live = (await $.session.usage()).context.tokens
       s.ctx = live && live > 0 ? live : u.input_tokens + u.cache_read_input_tokens + write
       // What the cache actually served this turn — the honest "warmed" figure,
-      // as against the context size, which is only what it could be holding.
+      // as against the context size, which is only what it could be holding. The
+      // running total is accumulated here rather than derived from the history,
+      // which keeps only the last twelve readings and would undercount a long
+      // session.
       s.lastRead = u.cache_read_input_tokens
+      s.readSession += u.cache_read_input_tokens
+      s.turns += 1
       const full = prev > 20000 && write >= 0.5 * prev
       if (full || s.coldWritePending) {
         const rates = ratesFor(s.lastModel)

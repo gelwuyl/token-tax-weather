@@ -48,6 +48,11 @@ the *same* facts, which is why only one of them ever draws:
 | **the band** | desktop and terminal, above the prompt | yes |
 | **the fallback** | the status line, on the surfaces that raise no band | no |
 
+**The state line** is what the status line carries where the band is up. The band
+is already saying the readout, so the slot goes to what the band cannot say:
+whether warming is on, when the next ping comes, and the command worth running.
+It is written whole and clipped by the app, which reveals the rest on hover.
+
 **The notices** are the one-off messages. There are three, named for what raises
 them:
 
@@ -59,12 +64,12 @@ them:
 
 They are pinned on the status line under the prompt — not in the transcript — so
 they are read once where you are working rather than scrolled back to. A notice
-outranks the readout on **every** surface, the band's own included, because it is
-something to read now rather than a fact to keep current. Among themselves the
-last one raised replaces the one before: there is a single slot. A notice stays
-up while the turn it belongs to runs and clears when that turn finishes — except
-the cold-write notice, which is raised at the end of its turn and so outlives it
-by one.
+outranks everything else that wants that slot, on **every** surface, the band's
+own included, because it is something to read now rather than a fact to keep
+current. Among themselves the last one raised replaces the one before: there is a
+single slot. A notice stays up while the turn it belongs to runs and clears when
+that turn finishes — except the cold-write notice, which is raised at the end of
+its turn and so outlives it by one.
 
 Each notice is written to fit one line. The status line shares its row with the
 model picker and the app clips what does not fit, so a notice says what happened
@@ -97,7 +102,7 @@ not the model's raw limit) the five forecasts read:
 ```text
 ☀  Clear         18% of 362k · ▁▁▂▁▂▁▂▂▁▂▂▁ · ▼ 4k last turn · read 62.1k this turn · off · -$0.03
 ☁  Cloudy        37% of 362k · ▂▃▃▄▃▄▄▅▄▄▃▄ · steady · read 128.9k this turn · off · -$0.05
-☂  Showers       55% of 362k · ▄▄▅▅▆▅▆▆▅▆▆▇ · ▲ +12k last turn · read 190.4k this turn · 6h00m left · ping in 50m · -$0.08
+☂  Showers       55% of 362k · ▄▄▅▅▆▅▆▆▅▆▆▇ · ▲ +12k last turn · read 190.4k this turn · read 41.6M this session · 6h00m left · ping in 50m · -$0.08
 ☇  Storm         82% of 362k · ▆▇▆▇█▇▇█▇▆▇█ · ▲ +40k last turn · read 281.2k this turn · off · -$0.12
 ↯  Compact soon  95% of 362k · ███████▇████ · ▲ +60k last turn · read 320.5k this turn · off · -$0.14
 ```
@@ -107,6 +112,11 @@ An agentic turn makes many model calls, and each one reads the context again, so
 155k context reports about `read 2.2M this turn`, several times the context it was
 reading. That is not the cache growing: the cache holds one context. `/cache-tax`
 divides the total by the context and reports the multiple.
+
+`read <n> this session` is the other half of that pair and appears once a turn has
+reported a read: the same figure summed over every turn since `/clear`, which is
+the volume the cache has served you overall. The card names the turn count it was
+summed over, so the figure can be checked rather than taken on trust.
 
 - **`☀ Clear`** under 25%, **`☁ Cloudy`** under 50%, **`☂ Showers`** under 75%,
   **`☇ Storm`** under 90%, **`↯ Compact soon`** at 90% and above — coloured
@@ -146,13 +156,31 @@ since that slot is never dropped for width.
 
 ### The readout's fallback rendering
 
-Where the band is raised — **desktop** and **terminal** — the status line is left
-empty on purpose. The band is already saying all of it in colour, and the same
-thing is never said twice, so the status line there carries only the one-off
-[notices](#the-two-families).
+Where the band is raised — **desktop** and **terminal** — the readout is already
+on screen in colour, so the status line there carries something else: the mod's own
+state, and the command worth running. Nothing is said twice, and the slot the band
+freed goes to the one thing the band cannot say.
 
-On the surfaces that raise no band the same facts fall back to the status line,
-without colour and in a fixed order:
+```text
+keepwarm off · /keepwarm to arm the window · /cache-tax for the full card
+keepwarm on, 6h00m left · ping in 50m · /cache-tax for the full card
+keepwarm stopped: ping not sent (nothing-to-fork) · /keepwarm to arm the window · /cache-tax for the full card
+```
+
+The first command offered is the actionable one, and it is offered only when there
+is something to act on: armed and warm, a ping is already coming, so the line
+suggests nothing but the card. A window that **stopped** says why — that is the
+difference between a window you never armed and one that was armed and gave up,
+and it is invisible in the readout, where both read `off`.
+
+These lines are written whole rather than trimmed. The status line is one row
+shared with the model picker, so the app clips what does not fit and shows the
+rest when you hover it — which is what makes a long line here free rather than
+wasteful. When a [notice](#the-two-families) fires it takes the slot for its turn,
+and the state line returns when that turn finishes.
+
+On the surfaces that raise no band the readout has to be on this line instead, so
+it is the readout that is drawn, without colour and in a fixed order:
 
 ```text
 off · ctx 133.9k · read 128.9k this turn · -$0.05

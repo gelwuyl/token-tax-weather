@@ -1,6 +1,6 @@
 {
   "name": "token-tax-weather",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Context weather and cache tax above the prompt: a coloured forecast of how full the window /autocompact measures against is, beside what the cache does to the bill, with /keepwarm, a warn-only guard that never drops a prompt, no automatic warming, and costs from user-supplied rates. Supersedes cache-tax 2.1.3.",
   "author": {
     "name": "Local User"

@@ -22,6 +22,10 @@ const DEADLINE_KEY = 'token-tax-weather:deadline:S1'
 // the first turn the engine has told this mod no model, and the line says so.
 const NO_MODEL_FOOTER = 'off · no context yet'
 const IDLE_FOOTER = 'off · ctx 200.5k · read 200k this turn · -$0.08'
+// The line where the band is raised: the band carries the readout, so this slot
+// carries the warming state and the command worth running instead. Nothing is
+// armed in the shared fixtures, so the window is offered rather than held.
+const HINT_FOOTER = 'keepwarm off · /keepwarm to arm the window · /cache-tax for the full card'
 
 // The band above the prompt is raised on `desktop` and `terminal` only, so the
 // shared session is a `vscode` one: the status line is the fallback there, and
@@ -615,13 +619,15 @@ describe('the band above the prompt', () => {
     expect(await bandOf($)).toBe(null)
   })
 
-  test('the status line is left empty where the band is raised', async ($, on) => {
+  test('where the band is raised the line carries the state and the hints, not the readout', async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
     await $.session.start(bandSession)
     await $.turn.complete(turn())
-    // The band says all of it in colour; saying it twice would be noise.
-    expect(w.status.filter(Boolean)).toEqual([])
+    // The band says the readout in colour, so this slot says the rest: whether
+    // warming is on, and what to run. Saying the readout again would be noise.
+    expect(w.status.at(-1)).toBe(HINT_FOOTER)
+    expect(w.status.at(-1) ?? '').not.toMatch(/ctx /)
   })
 
   test('no band is drawn before there is a window to measure against', async ($, on) => {
@@ -637,13 +643,16 @@ describe('the band above the prompt', () => {
 // when `e.surface` was still null. The captured value is still reported, so the
 // card's own line keeps the pair distinct.
 describe('the live surface roster decides the status line', () => {
-  test('a live desktop surface leaves the line empty even when the captured surface is empty', async ($, on) => {
+  test('a live desktop surface takes the readout off the line even when the captured surface is empty', async ($, on) => {
     mock.clock(on, { now: START })
     // A client attached after start: the start event saw no surface, the roster now says desktop.
     const w = world(on, { live: { tokens: 200000 }, surfaces: ['desktop'] })
     await $.session.start({ ...session, surface: null })
     await $.turn.complete(turn())
-    expect(w.status.filter(Boolean)).toEqual([])
+    // The captured value is `''`, which raises no band. The live roster is what
+    // decides, so the readout must not be here — and the hint line must be.
+    expect(w.status.at(-1)).toBe(HINT_FOOTER)
+    expect(w.status.at(-1) ?? '').not.toMatch(/ctx /)
   })
 
   test('a live vscode surface draws the readout', async ($, on) => {
@@ -654,13 +663,14 @@ describe('the live surface roster decides the status line', () => {
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
   })
 
-  test('a session drawing on several surfaces at once leaves it empty', async ($, on) => {
+  test('a session drawing on several surfaces at once takes the readout off the line', async ($, on) => {
     mock.clock(on, { now: START })
     // A terminal and a phone: the band is up on the terminal, so the readout stays off the line.
     const w = world(on, { live: { tokens: 200000 }, surfaces: ['terminal', 'vscode'] })
     await $.session.start(session)
     await $.turn.complete(turn())
-    expect(w.status.filter(Boolean)).toEqual([])
+    expect(w.status.at(-1)).toBe(HINT_FOOTER)
+    expect(w.status.at(-1) ?? '').not.toMatch(/ctx /)
   })
 })
 
@@ -743,8 +753,9 @@ describe('status-line notices', () => {
     expect(w.status.at(-1)).toMatch(/^cold resume · /)
     expect((w.status.at(-1) ?? '').length).toBeLessThanOrEqual(NOTICE_MAX)
     await $.turn.complete(turn())
-    // No cold write this turn, so the notice is cleared and the line is empty again.
-    expect(w.status.at(-1)).toBe(undefined)
+    // No cold write this turn, so the notice is cleared and the line is the hint
+    // line again — which is what the band surface shows when no notice is up.
+    expect(w.status.at(-1)).toBe(HINT_FOOTER)
   })
 
   test('a notice outranks the fallback on a surface the band never reaches', async ($, on) => {
@@ -781,5 +792,108 @@ describe('status-line notices', () => {
     // The setup diagnostic is read back later, so it keeps to the transcript.
     expect(w.logs.join('\n')).toMatch(/\/keepwarm is already registered by another plugin/)
     expect(w.status.join('\n')).not.toMatch(/already registered/)
+  })
+})
+
+// Where the band is raised the readout is already on screen in colour, so this
+// slot is free. It carries what the band does not: whether warming is on, and
+// the command worth running. The overflow past the slot's width is the surface's
+// to reveal on hover, so the line is written whole rather than trimmed.
+describe('the line the band frees', () => {
+  test('nothing armed offers to start a window', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toBe(HINT_FOOTER)
+  })
+
+  test('an armed window names the state, the ping, and nothing to run but the card', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    // Armed and warm: a ping is already coming, so there is nothing to suggest
+    // and the line does not invent one.
+    expect(w.status.at(-1)).toBe('keepwarm on, 6h00m left · ping in 50m · /cache-tax for the full card')
+  })
+
+  test('a window that stopped says why, and offers to start another', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    // The first ping fires 50m in, and this build's fork answers nothing-to-fork,
+    // so the window stops there. A stopped window is not an unarmed one, and the
+    // line is the only place that difference is visible outside the card.
+    await clock.advance(51 * MIN)
+    await flush()
+    expect(w.status.at(-1)).toBe(
+      'keepwarm stopped: ping not sent (nothing-to-fork) · /keepwarm to arm the window · /cache-tax for the full card',
+    )
+  })
+
+  test('a notice still outranks the line', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.classic.SessionStart(resume)
+    expect(w.status.at(-1)).toMatch(/^cold resume · /)
+  })
+})
+
+// `read <n> this turn` is the turn just gone; the session total is what the cache
+// has served since /clear. Both are shown, because they answer different
+// questions: what this turn cost, and what the cache has been worth overall.
+describe('the session read total', () => {
+  test('accumulates over turns and names the turn count on the card', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.turn.complete(turn())
+    const card = await $.command.run(run('cache-tax', ''))
+    // Two turns of the fixture's 200k read each.
+    expect(card.text).toMatch(/session read  400,000 tokens served from cache over 2 turns since \/clear/)
+  })
+
+  test('one turn is reported as one turn, not one turns', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    const card = await $.command.run(run('cache-tax', ''))
+    expect(card.text).toMatch(/over 1 turn since \/clear/)
+  })
+
+  test('the band carries the running total beside the turn it continues', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    await $.turn.complete(turn())
+    const band = await bandOf($)
+    expect(band?.text).toContain('read 200k this turn')
+    expect(band?.text).toContain('read 400k this session')
+  })
+
+  test('the band shows no session slot before a turn has reported one', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    const band = await bandOf($)
+    expect(band?.text ?? '').not.toContain('this session')
+  })
+
+  test('/clear starts the tally over, because it starts the conversation over', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.classic.SessionStart({ ...resume, source: 'clear' })
+    const card = await $.command.run(run('cache-tax', ''))
+    expect(card.text).not.toMatch(/session read/)
   })
 })
