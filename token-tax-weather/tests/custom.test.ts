@@ -491,6 +491,20 @@ describe('pinging', () => {
     expect(card.text).toMatch(/last ping   read 0 from cache, wrote 102\.8k, \$0\.0000 \(the cache was gone after 50m idle, so the provider's TTL is under that\)/)
   })
 
+  test('a warm ping says on the line what its gap proved about the provider TTL', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, { forks: [{ read: 200000, write: 0 }] })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    // Before any ping has run there is nothing proved, so the slot is only a time.
+    expect(w.status.at(-1)).toContain('ping in 50m ·')
+    expect(w.status.at(-1)).not.toContain('held')
+    await clock.advance(50 * MIN + 1)
+    await flush()
+    expect(w.status.at(-1)).toContain('ping in 50m (held 50m)')
+  })
+
   test('an unanswered fork stops the window with a reason', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const w = world(on, { forks: ['unanswered'] })
@@ -970,6 +984,35 @@ describe('approved band and status split', () => {
     expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · ($0.08, 7%) · /cache-tax for the full card')
     // Separate state and countdown with middot not comma
     expect(w.status.at(-1)).not.toContain('keepwarm on,')
+  })
+
+  // The fixture reads `opts.live.tokens` on every call, so a test can move the
+  // context between turns and give the trend something to compare. One mount per
+  // test: a second mount under the same requestId has no drawing to hold.
+  test('a rise names the move, not the turn it moved on', async ($, on) => {
+    mock.clock(on, { now: START })
+    const live = { tokens: 200000 }
+    world(on, { live, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    live.tokens = 255100
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('▲ +55.1k')
+    expect(band?.text).not.toContain('last turn')
+  })
+
+  test('a fall names the move too, and carries no sign of its own', async ($, on) => {
+    mock.clock(on, { now: START })
+    const live = { tokens: 255100 }
+    world(on, { live, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    live.tokens = 200000
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('▼ 55.1k')
+    expect(band?.text).not.toContain('last turn')
   })
 
   test('the band carries the distance to autocompact but not the free space', async ($, on) => {

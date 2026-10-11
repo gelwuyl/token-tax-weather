@@ -31,7 +31,7 @@ claude plugin install token-tax-weather@token-tax-weather
 
 The band is supported on **desktop** and **terminal**. Where no connected surface
 supports it, the status line carries the same window facts itself — the
-[band-down form](#the-band-down-form-while-no-surface-raises-the-band). That is a
+[VS Code and mobile form](#the-vs-code-and-mobile-form-while-no-surface-raises-the-band). That is a
 substitution, not an extra readout beside the band.
 
 ## Commands
@@ -75,7 +75,7 @@ The slots, in the order they appear:
 | **fill** | `<context> / <window> (<percent>%)` | Always |
 | **to go** | `<tokens> to go (<to-go%>)`, or `compact due` once the context has passed the threshold | A context exists and the engine reports an autocompact threshold |
 | **sparkline** | up to twelve bars from `▁▂▃▄▅▆▇█`, one bar per recent reading, each bar's height that reading's share of the window | A completed reading exists, and the band is 56 columns or wider |
-| **trend** | `▲ +<tokens> last turn` · `▼ <tokens> last turn` · `steady` | Two or more readings exist, and the band is 72 columns or wider |
+| **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings exist, and the band is 72 columns or wider |
 | **cache** | `<tokens> cache turn` | The last turn served something from cache |
 | **usage** | `<tokens> usage session` | Anything has been served since `/clear` |
 
@@ -83,9 +83,9 @@ Shapes, widest to narrowest. The window and the threshold are one session's; the
 percentages are the engine's own and need not equal `context ÷ window`.
 
 ```text
-↯  Compact soon  326.5k / 362k (90%)  ·  compact due  ·  ▅▅▆▆▇▇  ·  ▲ +12k last turn  ·  150.9k cache turn  ·  41.6M usage session
-☇  Storm  299.9k / 362k (83%)  ·  20.1k to go (5.6%)  ·  ▃▄▅▅▆▇  ·  ▲ +12k last turn  ·  150.9k cache turn  ·  41.6M usage session
-☁  Cloudy  164.1k / 362k (46%)  ·  155.9k to go (43.1%)  ·  ▁▂▃▃▄▅  ·  ▲ +12k last turn
+↯  Compact soon  326.5k / 362k (90%)  ·  compact due  ·  ▅▅▆▆▇▇  ·  ▲ +12k  ·  150.9k cache turn  ·  41.6M usage session
+☇  Storm  299.9k / 362k (83%)  ·  20.1k to go (5.6%)  ·  ▃▄▅▅▆▇  ·  ▲ +12k  ·  150.9k cache turn  ·  41.6M usage session
+☁  Cloudy  164.1k / 362k (46%)  ·  155.9k to go (43.1%)  ·  ▁▂▃▃▄▅  ·  ▲ +12k
 ☀  Clear  60.2k / 362k (17%)  ·  259.8k to go (71.8%)
 ☁  Cloudy  164.1k / 362k (46%)
 ```
@@ -102,11 +102,19 @@ percentages are the engine's own and need not equal `context ÷ window`.
 - **`to go` is absent until a context exists**, because with nothing in use it
   would only restate the threshold. It reads `compact due` once the context has
   passed the threshold, which is the point `/autocompact` fires.
-- **`cache` and `usage` are volumes, not cache sizes.** A turn can make several
-  model calls over one context, so a turn's cache-served total can exceed the
-  context it was reading. `usage` means **cache-served tokens only** — never all
-  input and output tokens, and never total spend. `/clear` resets it; a compaction
-  does not.
+- **`cache` and `usage` are the same quantity over two spans.** `cache` is the
+  turn just finished; `usage` is every turn since `/clear`. They coincide on the
+  first turn of a session, which is not a fault — it is one turn being both the
+  last one and the whole session so far.
+- **Both are volumes, not cache sizes.** A turn makes one model call per step, and
+  each call reads the context again, so a single turn's cache-served total can run
+  to many times the context it was reading — `6.6M cache turn` beside a 157.9k
+  context is about 42 calls, not a miscount. `usage` means **cache-served tokens
+  only** — never all input and output tokens, and never total spend. `/clear`
+  resets it; a compaction does not.
+- **The trend names the move, not the turn it moved on.** The arrow carries the
+  direction and the slot carries the comparison, so `▲ +12k` reads the same as the
+  row's other figures: a number and its unit, with the tense left to the arrow.
 
 ### The status line
 
@@ -123,15 +131,15 @@ one of the two can ever draw, and a notice pre-empts both:
 | | Drawn when | Carries |
 | --- | --- | --- |
 | **a notice** | an event needs attention now | what happened, the figure, what to do |
-| **the band-up form** | no notice, and the band is drawing | warming state, ping, price, command hints |
-| **the band-down form** | no notice, and no surface raises the band | warming state, ping, context, cache, price |
+| **the desktop and terminal form** | no notice, and a connected surface draws the band | warming state, ping, price, command hints |
+| **the VS Code and mobile form** | no notice, and no connected surface draws the band | warming state, ping, context, cache, price |
 
 The two forms exist because the band and the line share the work. While the band
 is up it already carries the window, so the line says what the band cannot — the
 warming and the command worth running. While the band is down, nothing else is
 showing the window, so the line has to. On the desktop and terminal surfaces you
-only ever see the band-up form; the band-down form is for a session attached to
-VS Code or a phone.
+only ever see the desktop and terminal form. The VS Code and mobile form is for a
+session attached to one of those two surfaces.
 
 #### When the line repaints
 
@@ -195,7 +203,7 @@ notices clear at the end of the turn they belong to; the cold-write notice is
 raised at the end of its turn and so outlives it by one. A guard never blocks or
 drops a prompt. The rates behind each figure are in `/cache-tax`.
 
-#### The band-up form, while the band is drawing
+#### The desktop and terminal form, while the band is drawing
 
 ```text
 <state> · [<duration> left] · [ping] · [<effect>] · [/keepwarm to arm the window] · /cache-tax for the full card
@@ -205,7 +213,7 @@ drops a prompt. The rates behind each figure are in `/cache-tax`.
 | --- | --- | --- | --- |
 | 1 | **state** | `keepwarm off` · `keepwarm on` · `keepwarm stopped: <reason>` | Always |
 | 2 | **window** | `<duration> left` | A warming window is armed |
-| 3 | **ping** | `ping in <duration>` · `ping after first turn` · `ping after next turn` | A warming window is armed |
+| 3 | **ping** | `ping in <duration>` · `ping in <duration> (held <gap>)` · `ping after first turn` · `ping after next turn` | A warming window is armed |
 | 4 | **effect** | `($<amount>, <share>%)` · `+$<amount>, <share>%` · `+$0.00, 0%` · `n/a` | A context exists |
 | 5 | **arm hint** | `/keepwarm to arm the window` | No warming window is armed |
 | 6 | **card hint** | `/cache-tax for the full card` | Always |
@@ -215,6 +223,7 @@ Examples:
 ```text
 keepwarm off · ($0.09, 7%) · /keepwarm to arm the window · /cache-tax for the full card
 keepwarm on · 6h00m left · ping in 50m · ($0.09, 7%) · /cache-tax for the full card
+keepwarm on · 6h00m left · ping in 50m (held 50m) · ($0.09, 7%) · /cache-tax for the full card
 keepwarm on · 6h00m left · ping after first turn · /cache-tax for the full card
 keepwarm on · 6h00m left · ping after next turn · ($0.09, 7%) · /cache-tax for the full card
 keepwarm stopped: ping not sent (nothing-to-fork) · ($0.09, 7%) · /keepwarm to arm the window · /cache-tax for the full card
@@ -230,6 +239,11 @@ share is absent when there is no money to take it of, so `n/a` stands alone.
 
 - **`window` is the warming budget**, not a provider-confirmed cache lifetime. It
   is the time left in the window `/keepwarm` armed.
+- **`(held <gap>)` is what the last ping proved.** A warm ping after a gap of *N*
+  means the provider's cache outlasted *N*, so the TTL is at least that — a real
+  measurement of a number nothing in the engine reports, from a request the window
+  was going to send anyway. It appears only after a warm ping; a cold one stops the
+  window instead, and its bound is already the stop reason on this same line.
 - **The two `ping after` forms** stand in for the countdown while there is no warm
   reading to count from: before the session's first turn, and after the estimated
   cache lifetime has elapsed.
@@ -238,11 +252,11 @@ share is absent when there is no money to take it of, so `n/a` stands alone.
 - **`stopped` names why a window gave up**, which is the difference between a
   window you never armed and one that was armed and stopped.
 
-#### The band-down form, while no surface raises the band
+#### The VS Code and mobile form, while no surface raises the band
 
 The same facts, compactly, with the context as a bare token count because there is
-no room for the window beside it. It is the band-up form plus the window, minus
-the hints.
+no room for the window beside it. It is the desktop and terminal form plus the
+window, minus the hints.
 
 ```text
 <warming> · [ping] · <context> · [<tokens> cache turn] · [<effect>]
@@ -251,10 +265,10 @@ the hints.
 | # | Slot | Forms | Shown when |
 | --- | --- | --- | --- |
 | 1 | **warming** | `off` · `<duration> left` · `stopped: <reason>` | Always |
-| 2 | **ping** | As the band-up form's | A warming window is armed |
+| 2 | **ping** | As the desktop and terminal form's | A warming window is armed |
 | 3 | **context** | `ctx <tokens>` · `no context yet` | Always |
 | 4 | **cache** | `<tokens> cache turn` | The last turn served something from cache |
-| 5 | **effect** | As the band-up form's | A context exists |
+| 5 | **effect** | As the desktop and terminal form's | A context exists |
 
 Examples:
 
@@ -322,7 +336,9 @@ outcome is a fact about the clock:
 
 So the card reads `last ping … (warm after 50m idle, so the provider's TTL is at
 least that)`, or the same sentence with *under* where the ping came back cold and
-the window stopped. The bound
+the window stopped. A warm bound also reaches the status line, folded into the
+ping slot it came from as `ping in 50m (held 50m)`; the cold one needs no slot,
+because stopping the window already puts it on that line. The bound
 costs nothing to learn: it comes from a request the window was going to send
 anyway. **This is the one honest way to set `every`** — arm a window, read what
 the first ping proves, and if it came back cold before your interval elapsed, the
@@ -384,7 +400,8 @@ those figures:
 
 The second figure inside the bracket is `from cache` as a share of `no cache`,
 and it appears on the status line as well as here, because the two figures answer
-different questions — see [the band-up form](#the-band-up-form-while-the-band-is-drawing).
+different questions — see
+[the desktop and terminal form](#the-desktop-and-terminal-form-while-the-band-is-drawing).
 
 It is a hypothetical comparison for **one read of the current context**. It is
 not the turn's bill, accumulated savings, or warming break-even. Its value does

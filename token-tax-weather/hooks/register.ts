@@ -332,12 +332,22 @@ function warmingText(s: State, now: number): string {
   return `${fmtDuration(s.deadline - now)} left`
 }
 
+/**
+ * What the last ping proved about the provider's expiry clock, in the ping slot
+ * it came from: a warm ping after a gap means the clock outlasts that gap. Only
+ * the warm outcome appears here — a cold ping stops the window, and its bound is
+ * already the stop reason on this same line.
+ */
+function heldText(s: State): string {
+  return s.last?.warm ? ` (held ${fmtDuration(s.last.idle)})` : ''
+}
+
 /** When the next ping can come, or null while nothing is armed. */
 function nextPingText(s: State, now: number): string | null {
   if (!s.deadline) return null
   if (!s.lastRequestAt) return 'ping after first turn'
   if (isCold(s, now)) return 'ping after next turn'
-  return `ping in ${fmtDuration(s.lastRequestAt + s.every - now)}`
+  return `ping in ${fmtDuration(s.lastRequestAt + s.every - now)}${heldText(s)}`
 }
 
 // The under-composer line, in one fixed field order so the same fact always
@@ -435,12 +445,17 @@ function sparkline(history: number[], window: number): string {
     .join('')
 }
 
-/** How much the context moved on the last turn, or null while there is no turn to compare. */
+/**
+ * How much the context moved on the last turn, or null while there is no turn to
+ * compare. The arrow carries the direction and the slot's position carries the
+ * "since the reading before it", so the words are left out: the band is a row of
+ * figures, and every other slot names its own unit rather than its tense.
+ */
 function trendText(history: number[]): string | null {
   if (history.length < 2) return null
   const delta = history[history.length - 1]! - history[history.length - 2]!
   if (delta === 0) return 'steady'
-  return `${delta > 0 ? '▲ +' : '▼ '}${fmtTok(Math.abs(delta))} last turn`
+  return `${delta > 0 ? '▲ +' : '▼ '}${fmtTok(Math.abs(delta))}`
 }
 
 /**
