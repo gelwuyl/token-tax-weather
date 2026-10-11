@@ -96,6 +96,22 @@ say is dropped rather than left blank. Against a 362k window (the size
   and the context size alone, so it is not an indicator of whether the cache is
   warm.
 
+The band sizes itself to the box it is drawn in, which is narrower than the window
+while a pane is docked beside the transcript. The widest slots go first, so a
+narrow band is a shorter band rather than a wrapped one:
+
+| The band's width | What is dropped |
+| --- | --- |
+| under 56 columns | the sparkline |
+| under 72 columns | the trend |
+| always | nothing else — the cache read, the warming state and the price are never dropped |
+
+A slot can also be missing for want of data rather than width: the sparkline needs
+a completed reading, the trend needs two, and the cache read appears only once a
+turn has actually served something from cache. The two are told apart by what is
+still there — a band with no `cached` slot is reporting that the last turn served
+nothing, since that slot is never dropped for width.
+
 ### The same states on the status line
 
 Where the band is raised — **desktop** and **terminal** — the status line is left
