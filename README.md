@@ -206,19 +206,27 @@ drops a prompt. The rates behind each figure are in `/cache-tax`.
 | 1 | **state** | `keepwarm off` · `keepwarm on` · `keepwarm stopped: <reason>` | Always |
 | 2 | **window** | `<duration> left` | A warming window is armed |
 | 3 | **ping** | `ping in <duration>` · `ping after first turn` · `ping after next turn` | A warming window is armed |
-| 4 | **effect** | `+$<amount>` · `($<amount>)` · `+$0.00` · `n/a` | A context exists |
+| 4 | **effect** | `($<amount>, <share>%)` · `+$<amount>, <share>%` · `+$0.00, 0%` · `n/a` | A context exists |
 | 5 | **arm hint** | `/keepwarm to arm the window` | No warming window is armed |
 | 6 | **card hint** | `/cache-tax for the full card` | Always |
 
 Examples:
 
 ```text
-keepwarm off · ($0.09) · /keepwarm to arm the window · /cache-tax for the full card
-keepwarm on · 6h00m left · ping in 50m · ($0.09) · /cache-tax for the full card
+keepwarm off · ($0.09, 7%) · /keepwarm to arm the window · /cache-tax for the full card
+keepwarm on · 6h00m left · ping in 50m · ($0.09, 7%) · /cache-tax for the full card
 keepwarm on · 6h00m left · ping after first turn · /cache-tax for the full card
-keepwarm on · 6h00m left · ping after next turn · ($0.09) · /cache-tax for the full card
-keepwarm stopped: ping not sent (nothing-to-fork) · ($0.09) · /keepwarm to arm the window · /cache-tax for the full card
+keepwarm on · 6h00m left · ping after next turn · ($0.09, 7%) · /cache-tax for the full card
+keepwarm stopped: ping not sent (nothing-to-fork) · ($0.09, 7%) · /keepwarm to arm the window · /cache-tax for the full card
 ```
+
+**The share inside the bracket is the cache read's price as a share of the
+uncached one** — the same figure the card shows as `from cache … = 7% of that`.
+It sits beside the money because the two answer different questions: the share
+says how good the cache deal is, and it is the same for every context size with
+a given model, while the money says what that deal is worth on the context in
+hand. An Opus read is `714%`, which is the whole of what that row means. The
+share is absent when there is no money to take it of, so `n/a` stands alone.
 
 - **`window` is the warming budget**, not a provider-confirmed cache lifetime. It
   is the time left in the window `/keepwarm` armed.
@@ -251,9 +259,9 @@ the hints.
 Examples:
 
 ```text
-off · ctx 199.1k · 190.4k cache turn · ($0.08)
-6h00m left · ping in 50m · ctx 199.1k · 190.4k cache turn · ($0.08)
-6h00m left · ping after next turn · ctx 199.1k · ($0.08)
+off · ctx 199.1k · 190.4k cache turn · ($0.08, 7%)
+6h00m left · ping in 50m · ctx 199.1k · 190.4k cache turn · ($0.08, 7%)
+6h00m left · ping after next turn · ctx 199.1k · ($0.08, 7%)
 off · no context yet
 ```
 
@@ -297,10 +305,30 @@ carries the engine's own token counts, and the plugin reads them:
 | read > 0, and a write under 10% of that read | counts the prefix served from cache; the window stays armed |
 | read 0, or a write as large as the read | stops the window, saying `the cache was gone` and giving both counts |
 
-`/cache-tax` prints the last ping's two counts and its cost, marked `(warm)` or
-`(the cache was gone)`, and a stopped window carries the same reason on the status
-line. So a setup where warming does nothing announces itself here rather than on
-a bill.
+`/cache-tax` prints the last ping's two counts and its cost, and a stopped window
+carries the same reason on the status line. So a setup where warming does nothing
+announces itself here rather than on a bill.
+
+**Each outcome also measures the provider's expiry clock, which nothing else can.**
+The plugin cannot read that clock — the engine does not expose it, and the
+`window` `/keepwarm` arms is a budget this plugin chooses, not a lifetime the
+provider promised. But every ping was preceded by a known idle gap, and its
+outcome is a fact about the clock:
+
+| The ping came back | What the gap proves |
+| --- | --- |
+| warm after a gap of *N* | the provider's TTL is **at least** *N* |
+| cold after a gap of *N* | the provider's TTL is **under** *N* |
+
+So the card reads `last ping … (warm after 50m idle, so the provider's TTL is at
+least that)`, or the same sentence with *under* where the ping came back cold and
+the window stopped. The bound
+costs nothing to learn: it comes from a request the window was going to send
+anyway. **This is the one honest way to set `every`** — arm a window, read what
+the first ping proves, and if it came back cold before your interval elapsed, the
+provider's TTL is shorter than the default 50m and `every` must come down to suit
+it. A ping that keeps coming back cold is the plugin telling you that the
+interval, not the idea, is wrong.
 
 Three consequences worth being explicit about:
 
@@ -345,14 +373,18 @@ knowing any rate. A share that is real but rounds away shows `<1%` rather than
 The **effect** is `from cache` minus `no cache` — the difference between two of
 those figures:
 
-- **A saving** is shown in parentheses, `($0.03)`: reading this context from cache
-  costs less than uncached input. Parentheses are accounting's own mark for a
-  credit, and avoid a minus sign that could be read as a hyphen.
-- **A surcharge** carries a leading `+`, `+$0.03`: reading it from cache costs
-  more than uncached input.
-- **Zero** is `+$0.00`: the two input costs are equal. It is a real answer, and it
-  never takes parentheses.
-- **`n/a`:** no rates are configured for the model.
+- **A saving** is shown in parentheses, `($0.03, 7%)`: reading this context from
+  cache costs less than uncached input. Parentheses are accounting's own mark for
+  a credit, and avoid a minus sign that could be read as a hyphen.
+- **A surcharge** carries a leading `+`, `+$0.03, 714%`: reading it from cache
+  costs more than uncached input.
+- **Zero** is `+$0.00, 0%`: the two input costs are equal. It is a real answer,
+  and it never takes parentheses.
+- **`n/a`:** no rates are configured for the model, so there is no share either.
+
+The second figure inside the bracket is `from cache` as a share of `no cache`,
+and it appears on the status line as well as here, because the two figures answer
+different questions — see [the band-up form](#the-band-up-form-while-the-band-is-drawing).
 
 It is a hypothetical comparison for **one read of the current context**. It is
 not the turn's bill, accumulated savings, or warming break-even. Its value does

@@ -68,7 +68,7 @@ export const RATES: Record<string, Rates> = {
 
 const RATE_SOURCE = 'user-supplied rates'
 
-type PingRecord = { at: number; read: number; write: number; usd: number | null; warm: boolean }
+type PingRecord = { at: number; idle: number; read: number; write: number; usd: number | null; warm: boolean }
 type Miss = { at: number; tokens: number; usd: number | null }
 type GuardMode = 'warn'
 
@@ -223,16 +223,38 @@ function cacheEffectUsd(s: State): number | null {
 }
 
 /**
- * A cost as a share of the uncached price — the baseline the other figures in
- * the card are read against. A non-zero share that rounds away is `<1%` rather
- * than `0%`, which is the difference between a figure that is nothing and one
- * that is merely small. Empty when either end is unknown, or when the baseline
- * is zero and a share would be a division by it.
+ * A cost as a share of the uncached price, bare — the form the status line has
+ * room for. A non-zero share that rounds away is `<1%` rather than `0%`, which
+ * is the difference between a figure that is nothing and one that is merely
+ * small. Empty when either end is unknown, or when the baseline is zero and a
+ * share would be a division by it.
  */
-export function fmtShare(usd: number | null, base: number | null): string {
+export function fmtSharePct(usd: number | null, base: number | null): string {
   if (usd == null || base == null || base <= 0) return ''
   const pct = (usd / base) * 100
-  return ` = ${pct <= 0 ? '0%' : pct < 1 ? '<1%' : `${Math.round(pct)}%`} of that`
+  return pct <= 0 ? '0%' : pct < 1 ? '<1%' : `${Math.round(pct)}%`
+}
+
+/** The same share as a clause, for the card, which has room to say what of. */
+export function fmtShare(usd: number | null, base: number | null): string {
+  const pct = fmtSharePct(usd, base)
+  return pct ? ` = ${pct} of that` : ''
+}
+
+/**
+ * The effect as the status line shows it: the signed money, with the share of
+ * the uncached price riding inside the same bracket. The share is what says how
+ * good the cache deal is — a read at 7% of uncached input is a bargain however
+ * large the context, and the Opus row's 714% says the opposite just as plainly —
+ * while the money says what it is worth on the context in hand. An unknown
+ * effect is `n/a` and takes no share, because there is no figure to take it of.
+ */
+function effectSlot(s: State): string {
+  const effect = cacheEffectUsd(s)
+  const money = fmtSignedUsd(effect)
+  const pct = effect == null ? '' : fmtSharePct(warmUsd(s), uncachedUsd(s))
+  if (!pct) return money
+  return money.startsWith('(') ? `(${money.slice(1, -1)}, ${pct})` : `${money}, ${pct}`
 }
 
 /** Everything a fork bills: the cache read, any cache write, uncached input at its own rate, and the output. */
@@ -346,10 +368,7 @@ function statusText(s: State, now: number): string {
   if (ping) parts.push(ping)
   parts.push(s.ctx > 0 ? `ctx ${fmtTok(s.ctx)}` : 'no context yet')
   if (s.lastRead > 0) parts.push(`cache ${fmtTok(s.lastRead)} this turn`)
-  if (s.ctx > 0) {
-    const effect = cacheEffectUsd(s)
-    parts.push(effect == null ? 'n/a' : fmtSignedUsd(effect))
-  }
+  if (s.ctx > 0) parts.push(effectSlot(s))
   return parts.join(' · ')
 }
 
@@ -367,10 +386,7 @@ function hintText(s: State, now: number): string {
   if (s.deadline) parts.push(`${fmtDuration(s.deadline - now)} left`)
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
-  if (s.ctx > 0) {
-    const effect = cacheEffectUsd(s)
-    parts.push(effect == null ? 'n/a' : fmtSignedUsd(effect))
-  }
+  if (s.ctx > 0) parts.push(effectSlot(s))
   return [...parts, ...hintsFor(s)].join(' · ')
 }
 
@@ -634,8 +650,14 @@ async function ping($: EngineInterface, s: State) {
   // A warm ping reads the prefix and writes only its own message; a write of a tenth of the read or more means the prefix broke.
   const warm = u.cache_read_input_tokens > 0 && u.cache_creation_input_tokens < 0.1 * u.cache_read_input_tokens
   const usd = r ? pingUsd(u, r) : null
-  s.last = { at: now, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, usd, warm }
-  if (!warm) return stop($, s, `ping read ${fmtTok(u.cache_read_input_tokens)}, wrote ${fmtTok(u.cache_creation_input_tokens)} (${fmtUsd(usd)}): the cache was gone`)
+  // How long the cache had been left alone before this ping. The outcome turns
+  // that gap into a fact about the provider's expiry clock, which the engine does
+  // not expose: a warm ping proves the clock outlasts the gap, a cold one proves
+  // it does not. Either way the bound comes from a request the window was going
+  // to send anyway, so learning it costs nothing extra.
+  const idle = now - s.lastRequestAt
+  s.last = { at: now, idle, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, usd, warm }
+  if (!warm) return stop($, s, `ping read ${fmtTok(u.cache_read_input_tokens)}, wrote ${fmtTok(u.cache_creation_input_tokens)} (${fmtUsd(usd)}): the cache was gone after ${fmtDuration(idle)} idle, so the provider's TTL is under that`)
   s.lastRequestAt = now
   await arm($, s)
 }
@@ -746,7 +768,15 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   if (isCold(s, now)) lines.push('cold note   the next message re-writes the context at the write rate. /keepwarm holds it; /clear and paste a summary if you only need the conclusions.')
   const armed = s.deadline ? `on, ${warmingText(s, now)}` : 'off (/keepwarm to arm it for 6h00m)'
   lines.push(`keepwarm    ${s.stopped ? `stopped, ${s.stopped}` : armed}`)
-  if (s.last) lines.push(`last ping   read ${fmtTok(s.last.read)} from cache, wrote ${fmtTok(s.last.write)}, ${fmtUsd(s.last.usd)}${s.last.warm ? ' (warm)' : ' (the cache was gone)'}`)
+  if (s.last) {
+    // The outcome is a fact about the provider's expiry clock, which nothing in
+    // the engine reports: a warm ping proves the clock outlasts the idle gap it
+    // followed, a cold one proves it does not.
+    const bound = s.last.warm
+      ? `warm after ${fmtDuration(s.last.idle)} idle, so the provider's TTL is at least that`
+      : `the cache was gone after ${fmtDuration(s.last.idle)} idle, so the provider's TTL is under that`
+    lines.push(`last ping   read ${fmtTok(s.last.read)} from cache, wrote ${fmtTok(s.last.write)}, ${fmtUsd(s.last.usd)} (${bound})`)
+  }
   const pings = breakEvenPings(s)
   if (pings != null && pings > 0) lines.push(`break-even  up to ${pings} pings at the read rate cost one cold write, about ${fmtDuration(pings * s.every)} of idle at one ping per ${fmtDuration(s.every)}`)
   else if (r && r.cacheWrite <= 0) lines.push('break-even  warming cannot pay for itself at these rates: a cold re-write is billed at nothing, so every ping is a net cost')
