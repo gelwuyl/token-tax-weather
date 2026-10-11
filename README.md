@@ -64,6 +64,63 @@ which has the room for them.
 | `/cache-tax` | The full card: state, window, prices, the cache's effect, break-even |
 | `/cache-tax-diagnostic` | Read-only. What the host's pricing interface exposes, and nothing else |
 
+## What the band can say
+
+The band is one line, and every slot in it is optional — a slot with nothing to
+say is dropped rather than left blank. Against a 362k window (the size
+`/autocompact` fires on, not the model's raw limit) the five forecasts read:
+
+```text
+☀  Clear         18% of 362k · ▁▁▂▁▂▁▂▂▁▂▂▁ · ▼ 4k last turn · cached 62.1k · off · -$0.03
+☁  Cloudy        37% of 362k · ▂▃▃▄▃▄▄▅▄▄▃▄ · steady · cached 128.9k · off · -$0.05
+☂  Showers       55% of 362k · ▄▄▅▅▆▅▆▆▅▆▆▇ · ▲ +12k last turn · cached 190.4k · 6h00m left · ping in 50m · -$0.08
+☇  Storm         82% of 362k · ▆▇▆▇█▇▇█▇▆▇█ · ▲ +40k last turn · cached 281.2k · off · -$0.12
+↯  Compact soon  95% of 362k · ███████▇████ · ▲ +60k last turn · cached 320.5k · off · -$0.14
+```
+
+- **`☀ Clear`** under 25%, **`☁ Cloudy`** under 50%, **`☂ Showers`** under 75%,
+  **`☇ Storm`** under 90%, **`↯ Compact soon`** at 90% and above — coloured
+  yellow, cyan, blue, magenta and red.
+- **The sparkline** is the last twelve readings, one bar each, the bar's height
+  the share of the window at that reading.
+- **The trend** is the change since the reading before: `▲ +12k last turn`,
+  `▼ 4k last turn`, or `steady`. Absent until there are two readings to compare.
+- **`cached 128.9k`** is what the last turn actually served from cache. That is a
+  different measurement from the context figure beside it — one is what the cache
+  *could* hold, the other what it *did* serve — so the two are never conflated,
+  and the slot is absent when the last turn reported no cache read at all.
+- **`off`** is the warming slot: no window is armed. `/keepwarm` replaces it with
+  a countdown, `6h00m left`, and adds `ping in 50m` while a window is running.
+- **The final figure** is the cache's effect on the bill for this context. See
+  [Reading the figure](#reading-the-figure) — it is decided by the model's rates
+  and the context size alone, so it is not an indicator of whether the cache is
+  warm.
+
+### The same states on the status line
+
+Where the band is raised — **desktop** and **terminal** — the status line is left
+empty on purpose. The band is already saying all of it in colour, and the same
+thing is never said twice, so the status line there carries only the one-off
+[notices](#notices).
+
+On the surfaces that raise no band the same facts fall back to the status line,
+without colour and in a fixed order:
+
+```text
+off · ctx 133.9k · cached 128.9k · -$0.05
+6h00m left · ping in 50m · ctx 133.9k · cached 128.9k · -$0.05
+6h00m left · ping after first turn · ctx 133.9k · cached 128.9k · -$0.05
+6h00m left · ping after next turn · ctx 133.9k · cached 128.9k · -$0.05
+off · ctx 133.9k · -$0.05
+off · no context yet
+```
+
+The order is warming, ping, context, cache read, effect. The context appears as a
+token count rather than a percentage, because there is no room for the window
+beside it, and the sparkline and trend are dropped entirely. The two `ping after`
+forms stand in for the countdown while there is no reading to count from — before
+this session's first turn, and after the cache has gone cold.
+
 ## What it never does
 
 - **It never drops a prompt.** The guard warns that the cache went cold and sends
