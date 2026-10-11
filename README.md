@@ -37,46 +37,32 @@ without colour, so the two never both draw the readout.
 ## The two families
 
 Everything this plugin draws belongs to one of two families, and these are the
-names this README uses for them.
+names used for them throughout this README.
 
-**The readout** is the continuously-updating state: the forecast, the cache read,
-the countdown, the price. It has two renderings, and they are two renderings of
-the *same* facts, which is why only one of them ever draws:
+**The readout** is the continuously-updating state: how full the window is, what
+the cache is doing, what it costs. It has two renderings, and only one of them
+ever draws.
 
 | Rendering | Where | In colour |
 | --- | --- | --- |
 | **the band** | desktop and terminal, above the prompt | yes |
 | **the fallback** | the status line, on the surfaces that raise no band | no |
 
-**The state line** is what the status line carries where the band is up. The band
-is already saying the readout, so the slot goes to what the band cannot say:
-whether warming is on, when the next ping comes, and the command worth running.
-It is written whole and clipped by the app, which reveals the rest on hover.
+**The state line** is what the status line carries where the band is up: the mod's
+own state, and the command worth running. The band already says the readout, so
+this slot says what the band cannot.
 
-**The notices** are the one-off messages. There are three, named for what raises
-them:
+**The notices** are the one-off messages. There are three: the **resume notice**,
+the **guard notice** and the **cold-write notice**.
 
-| Notice | Raised when |
-| --- | --- |
-| **the resume notice** | a session resumes or forks and its prompt cache is likely expired |
-| **the guard notice** | a prompt is sent after the cache has gone cold |
-| **the cold-write notice** | a turn wrote a fresh cache entry |
+So the status line is **one slot with three possible occupants**, in this order of
+precedence:
 
-They are pinned on the status line under the prompt — not in the transcript — so
-they are read once where you are working rather than scrolled back to. A notice
-outranks everything else that wants that slot, on **every** surface, the band's
-own included, because it is something to read now rather than a fact to keep
-current. Among themselves the last one raised replaces the one before: there is a
-single slot. A notice stays up while the turn it belongs to runs and clears when
-that turn finishes — except the cold-write notice, which is raised at the end of
-its turn and so outlives it by one.
+1. a **notice**, when one is up — it outranks everything, on every surface
+2. else the **state line**, where the band is up
+3. else the **fallback**, where the band is not
 
-Each notice is written to fit one line. The status line shares its row with the
-model picker and the app clips what does not fit, so a notice says what happened
-and what it costs, and stops there. Hovering a clipped line shows the rest of the
-same text, no more — which is why the notices are short by design rather than
-long and hovered. The rates behind the figure, and what to do about a cold cache,
-are in `/cache-tax`, which has the room for them.
+Among notices, the last one raised replaces the one before: there is a single slot.
 
 ## Commands
 
@@ -91,75 +77,76 @@ are in `/cache-tax`, which has the room for them.
 | `/cache-tax` | The full card: state, window, prices, the cache's effect, break-even |
 | `/cache-tax-diagnostic` | Read-only. What the host's pricing interface exposes, and nothing else |
 
-## What the readout can say
+## Grammar
 
-This is the band's rendering of the readout; the fallback says the same things in
-fewer slots, and [below](#the-readouts-fallback-rendering) is that one. The band is
-one line, and every slot in it is optional — a slot with nothing to say is dropped
-rather than left blank. Against a 362k window (the size `/autocompact` fires on,
-not the model's raw limit) the five forecasts read:
+### The band
+
+One line. The slots come in this order, and every one of them is optional — a slot
+with nothing to say is dropped rather than left blank.
+
+| Slot | Shows | Appears | Forms |
+| --- | --- | --- | --- |
+| **forecast** | the window's fill, as a weather band | always | `☀ Clear` under 25% · `☁ Cloudy` under 50% · `☂ Showers` under 75% · `☇ Storm` under 90% · `↯ Compact soon` at 90% and above — coloured yellow, cyan, blue, magenta, red |
+| **fill** | that fill as a percentage, and the window it is measured against | always | `<n>% of <window>` |
+| **sparkline** | the last twelve readings | the band is 56 columns or wider | twelve bars from `▁▂▃▄▅▆▇█`; a bar's height is that reading's share of the window |
+| **trend** | the change since the reading before | the band is 72 columns or wider, and two readings exist | `▲ +<n> last turn` · `▼ <n> last turn` · `steady` |
+| **read** | tokens the cache served this turn | a turn has served something | `read <n> this turn` |
+| **session read** | the same figure, summed since `/clear` | a turn has served something | `read <n> this session` |
+| **warming** | whether a warming window is armed | always | `off` · `<duration> left` |
+| **ping** | when the next ping comes | a window is armed | `ping in <duration>` · `ping after first turn` · `ping after next turn` |
+| **effect** | what the cache does to the bill for this context | a context exists | `±$<n>`, or `n/a` with no rates for the model |
 
 ```text
-☀  Clear         18% of 362k · ▁▁▂▁▂▁▂▂▁▂▂▁ · ▼ 4k last turn · read 62.1k this turn · off · -$0.03
-☁  Cloudy        37% of 362k · ▂▃▃▄▃▄▄▅▄▄▃▄ · steady · read 128.9k this turn · off · -$0.05
-☂  Showers       55% of 362k · ▄▄▅▅▆▅▆▆▅▆▆▇ · ▲ +12k last turn · read 190.4k this turn · read 41.6M this session · 6h00m left · ping in 50m · -$0.08
-☇  Storm         82% of 362k · ▆▇▆▇█▇▇█▇▆▇█ · ▲ +40k last turn · read 281.2k this turn · off · -$0.12
-↯  Compact soon  95% of 362k · ███████▇████ · ▲ +60k last turn · read 320.5k this turn · off · -$0.14
+☂  Showers  55% of 362k  ·  ▃▄▅▅▆▇  ·  ▲ +12k last turn  ·  read 190.4k this turn  ·  read 1.2M this session  ·  6h00m left · ping in 50m  ·  -$0.08
 ```
 
-An agentic turn makes many model calls, and each one reads the context again, so
-`read` is the **turn's total across all of them** — a fourteen-call turn over a
-155k context reports about `read 2.2M this turn`, several times the context it was
-reading. That is not the cache growing: the cache holds one context. `/cache-tax`
-divides the total by the context and reports the multiple.
+`<window>` is the window `/autocompact` fires on, not the model's raw limit. The
+**read** slot counts every model call the turn made — a turn of fourteen calls
+over one context reads that context fourteen times — so it can run to a multiple
+of the context beside it. That is not the cache growing; the cache holds one
+context. `/cache-tax` divides the total by the context and reports the multiple.
+For the **effect** slot, see [Reading the figure](#reading-the-figure): it is
+decided by the model's rates and the context size alone, so it is **not** an
+indicator of whether the cache is warm.
 
-`read <n> this session` is the other half of that pair and appears once a turn has
-reported a read: the same figure summed over every turn since `/clear`, which is
-the volume the cache has served you overall. The card names the turn count it was
-summed over, so the figure can be checked rather than taken on trust.
+A slot can be missing for width or for want of data, and the two are told apart by
+what is still there:
 
-- **`☀ Clear`** under 25%, **`☁ Cloudy`** under 50%, **`☂ Showers`** under 75%,
-  **`☇ Storm`** under 90%, **`↯ Compact soon`** at 90% and above — coloured
-  yellow, cyan, blue, magenta and red.
-- **The sparkline** is the last twelve readings, one bar each, the bar's height
-  the share of the window at that reading.
-- **The trend** is the change since the reading before: `▲ +12k last turn`,
-  `▼ 4k last turn`, or `steady`. Absent until there are two readings to compare.
-- **`read 128.9k this turn`** is how much the cache actually served this turn, as
-  against the context figure beside it, which is only what the cache *could* be
-  holding. The two are deliberately different measurements and are never
-  conflated — but note that `read` counts every model call the turn made, so on a
-  long agentic turn it multiplies, while the context does not. The slot is absent
-  when the turn served nothing from cache.
-- **`off`** is the warming slot: no window is armed. `/keepwarm` replaces it with
-  a countdown, `6h00m left`, and adds `ping in 50m` while a window is running.
-- **The final figure** is the cache's effect on the bill for this context. See
-  [Reading the figure](#reading-the-figure) — it is decided by the model's rates
-  and the context size alone, so it is not an indicator of whether the cache is
-  warm.
-
-The band sizes itself to the box it is drawn in, which is narrower than the window
-while a pane is docked beside the transcript. The widest slots go first, so a
-narrow band is a shorter band rather than a wrapped one:
-
-| The band's width | What is dropped |
+| Missing slot | Why |
 | --- | --- |
-| under 56 columns | the sparkline |
-| under 72 columns | the trend |
-| always | nothing else — the read, the warming state and the price are never dropped |
+| sparkline | band under 56 columns, or no completed reading yet |
+| trend | band under 72 columns, or fewer than two readings |
+| read, session read | the turn served nothing from cache — these are never dropped for width |
+| effect | no context yet |
 
-A slot can also be missing for want of data rather than width: the sparkline needs
-a completed reading, the trend needs two, and the read appears only once a turn
-has actually served something from cache. The two are told apart by what is still
-there — a band with no `read` slot is reporting that the last turn served nothing,
-since that slot is never dropped for width.
+### The status line
 
-### The readout's fallback rendering
+One slot, on the row shared with the model picker. Whatever does not fit is clipped
+by the app and shown when you hover it, so a long line costs nothing here.
 
-Where the band is raised — **desktop** and **terminal** — the readout is already
-on screen in colour, so the status line there carries something else: the mod's own
-state, and the command worth running. Nothing is said twice, and the slot the band
-freed goes to the one thing the band cannot say.
+**A notice**, when one is up. It outranks the other two occupants on every surface,
+the band's own included. Three parts, in this order: what happened, the number,
+and what it means for you.
+
+| Notice | Raised when | Grammar | Example |
+| --- | --- | --- | --- |
+| **resume notice** | a session resumes or forks and its prompt cache is likely expired | `cold resume · first message ≈<usd>` | `cold resume · first message ≈$4.01` |
+| **guard notice** | a prompt is sent after the cache has gone cold | `cold <age> · re-write ≈<usd> · sending` | `cold 2h00m · re-write ≈$4.01 · sending` |
+| **cold-write notice** | a turn wrote a fresh cache entry | `cold write <tokens> · <usd> · /keepwarm` | `cold write 200.5k · $4.01 · /keepwarm` |
+
+That last part is a command to run, not a state: `/keepwarm` on its own arms a
+window, and there is no `/keepwarm on`. A notice stays up while the turn it belongs
+to runs and clears when that turn finishes — except the cold-write notice, which is
+raised at the end of its turn and so outlives it by one. The rates behind each
+figure, and the advice a cold cache deserves, are in `/cache-tax`.
+
+**The state line**, where the band is up.
+
+| Slot | Shows | Appears | Forms |
+| --- | --- | --- | --- |
+| **state** | whether a warming window is armed | always | `keepwarm off` · `keepwarm on, <duration> left` · `keepwarm stopped: <why>` |
+| **ping** | when the next ping comes | a window is armed | as the band's |
+| **hint** | the command worth running | the card always; the window only while nothing is armed | `/keepwarm to arm the window` · `/cache-tax for the full card` |
 
 ```text
 keepwarm off · /keepwarm to arm the window · /cache-tax for the full card
@@ -167,35 +154,35 @@ keepwarm on, 6h00m left · ping in 50m · /cache-tax for the full card
 keepwarm stopped: ping not sent (nothing-to-fork) · /keepwarm to arm the window · /cache-tax for the full card
 ```
 
-The first command offered is the actionable one, and it is offered only when there
-is something to act on: armed and warm, a ping is already coming, so the line
-suggests nothing but the card. A window that **stopped** says why — that is the
-difference between a window you never armed and one that was armed and gave up,
-and it is invisible in the readout, where both read `off`.
+`stopped` names why a window gave up, which is the difference between a window you
+never armed and one that was armed and stopped — a difference the band cannot show,
+where both read `off`.
 
-These lines are written whole rather than trimmed. The status line is one row
-shared with the model picker, so the app clips what does not fit and shows the
-rest when you hover it — which is what makes a long line here free rather than
-wasteful. When a [notice](#the-two-families) fires it takes the slot for its turn,
-and the state line returns when that turn finishes.
+**The fallback**, where the band is not raised: the same facts as the band, in a
+fixed order and without colour, with the context as a token count because there is
+no room for the window beside it.
 
-On the surfaces that raise no band the readout has to be on this line instead, so
-it is the readout that is drawn, without colour and in a fixed order:
+| Slot | Forms |
+| --- | --- |
+| **warming** | as the band's |
+| **ping** | as the band's |
+| **context** | `ctx <tokens>` · `no context yet` |
+| **read** | `read <n> this turn` |
+| **effect** | `±$<n>` · `n/a` |
 
 ```text
-off · ctx 133.9k · read 128.9k this turn · -$0.05
-6h00m left · ping in 50m · ctx 133.9k · read 128.9k this turn · -$0.05
-6h00m left · ping after first turn · ctx 133.9k · read 128.9k this turn · -$0.05
-6h00m left · ping after next turn · ctx 133.9k · read 128.9k this turn · -$0.05
-off · ctx 133.9k · -$0.05
+off · ctx 199.1k · read 190.4k this turn · -$0.08
+6h00m left · ping in 50m · ctx 199.1k · read 190.4k this turn · -$0.08
+6h00m left · ping after first turn · ctx 199.1k · read 190.4k this turn · -$0.08
+6h00m left · ping after next turn · ctx 199.1k · read 190.4k this turn · -$0.08
+off · ctx 199.1k · -$0.08
 off · no context yet
 ```
 
-The order is warming, ping, context, read, effect. The context appears as a token
-count rather than a percentage, because there is no room for the window beside it,
-and the sparkline and trend are dropped entirely. The two `ping after`
-forms stand in for the countdown while there is no reading to count from — before
-this session's first turn, and after the cache has gone cold.
+The sparkline, the trend and the session read are dropped here: there is no width
+for them. The two `ping after` forms stand in for the countdown while there is no
+reading to count from — before the session's first turn, and after the cache has
+gone cold.
 
 ## What it never does
 
