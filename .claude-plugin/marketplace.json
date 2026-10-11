@@ -1,15 +1,15 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "token-tax-weather",
-  "description": "Context weather and cache tax in one band above the prompt, for Claude Code.",
+  "description": "Context weather and cache volume above the prompt, with warming and pricing on the status line, for Claude Code.",
   "owner": {
     "name": "gelwu"
   },
   "plugins": [
     {
       "name": "token-tax-weather",
-      "description": "A coloured forecast of how full the context window is, beside what the prompt cache is doing to the bill: /keepwarm, a warn-only guard that never drops a prompt, no automatic warming, and costs from user-supplied rates.",
-      "version": "0.4.3",
+      "description": "A coloured context forecast and cache-served token counts in the band; warming state and a signed price comparison on the status line. Includes /keepwarm, a warn-only guard, no automatic warming, and user-supplied rates.",
+      "version": "0.4.9",
       "category": "productivity",
       "source": "./token-tax-weather"
     }

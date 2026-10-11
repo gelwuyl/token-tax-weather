@@ -5,7 +5,7 @@ import type {
   ContextWindowSource, SessionContextUsage, SessionStartInput, Settings, SettingsSource, TurnCompleteInput, TurnUsage,
 } from 'claude-code'
 
-import { RATES, ratesFor } from '../hooks/register'
+import { RATES, fmtSignedUsd, ratesFor } from '../hooks/register'
 
 tier('user')
 
@@ -21,11 +21,11 @@ const DEADLINE_KEY = 'token-tax-weather:deadline:S1'
 // The idle footer: what the costing is based on while nothing is armed. Before
 // the first turn the engine has told this mod no model, and the line says so.
 const NO_MODEL_FOOTER = 'off · no context yet'
-const IDLE_FOOTER = 'off · ctx 200.5k · read 200k this turn · -$0.08'
+const IDLE_FOOTER = 'off · ctx 200.5k · cache 200k this turn · ($0.08)'
 // The line where the band is raised: the band carries the readout, so this slot
-// carries the warming state and the command worth running instead. Nothing is
-// armed in the shared fixtures, so the window is offered rather than held.
-const HINT_FOOTER = 'keepwarm off · /keepwarm to arm the window · /cache-tax for the full card'
+// carries the warming state, signed money, and hints.
+const HINT_FOOTER = 'keepwarm off · ($0.08) · /keepwarm to arm the window · /cache-tax for the full card'
+const NO_CONTEXT_HINT_FOOTER = 'keepwarm off · /keepwarm to arm the window · /cache-tax for the full card'
 
 // The band above the prompt is raised on `desktop` and `terminal` only, so the
 // shared session is a `vscode` one: the status line is the fallback there, and
@@ -70,6 +70,8 @@ function world(on: On, opts: {
   window?: number
   /** When set, `{ breakdown }` answers a compaction window of this size. */
   rawMax?: number
+  /** When set, the breakdown carries a `free` row of this many tokens. */
+  free?: number
   autocompactSource?: string
   /**
    * What the live `$.session.surfaces()` reports. Left out, it mirrors the one
@@ -126,7 +128,9 @@ function world(on: On, opts: {
         isAutoCompactEnabled: true,
         percentage: tokens ? (tokens / opts.rawMax) * 100 : 0,
         totalTokens: tokens ?? 0,
-        categories: [],
+        categories: opts.free == null ? [] : [{
+          name: 'Free space', tokens: opts.free, color: 'inactive', isDeferred: false, kind: 'free' as const,
+        }],
         apiUsage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
       }
     }
@@ -271,7 +275,7 @@ describe('warming', () => {
     const w = world(on, { model: UNCONFIGURED })
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
-    expect(w.status.at(-1)).toBe('off · ctx 200.5k · read 200k this turn · n/a')
+    expect(w.status.at(-1)).toBe('off · ctx 200.5k · cache 200k this turn · n/a')
   })
 
   test('a configured model carries no unpriced flag', async ($, on) => {
@@ -301,7 +305,7 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · read 200k this turn · -$0.08')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · ($0.08)')
   })
 
   test('an armed window says so when it has no rates for the model', async ($, on) => {
@@ -310,7 +314,7 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · read 200k this turn · n/a')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · n/a')
   })
 
   test('the fields keep their order whatever the state', async ($, on) => {
@@ -322,7 +326,7 @@ describe('warming', () => {
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · read 200k this turn · -$0.08')
+    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · ($0.08)')
     await clock.advance(60 * MIN)
     await $.command.run(run('keepwarm', 'off'))
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
@@ -335,7 +339,7 @@ describe('warming', () => {
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 141912 }) }))
     // Whole-thousands rounding would print both of these as 300k and 142k and
     // make the cache read look like half the context by coincidence of rounding.
-    expect(w.status.at(-1)).toBe('off · ctx 299.9k · read 141.9k this turn · -$0.12')
+    expect(w.status.at(-1)).toBe('off · ctx 299.9k · cache 141.9k this turn · ($0.12)')
   })
 
   test("the Original Mod's settings keys arm nothing", async ($, on) => {
@@ -467,7 +471,7 @@ describe('pinging', () => {
     await $.command.run(run('keepwarm', '6h'))
     await clock.advance(50 * MIN + 1)
     await flush()
-    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · read 200k this turn · -$0.08')
+    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · cache 200k this turn · ($0.08)')
   })
 })
 
@@ -489,7 +493,9 @@ describe('user-supplied rates', () => {
     expect(result.text).toMatch(/input 0\.43 · read 0\.03 · write 0 · output 0\.87 USD\/MTok \(user-supplied rates; prices, not costs\)/)
     // Fable's read rate is far below its input rate, so the cache is a saving
     // and the card must say so with a negative figure, not a positive one.
-    expect(result.text).toMatch(/cache effect  -\$0\.08 for this context/)
+    // A saving renders in parentheses, so the card must not print a bare minus.
+    expect(result.text).toMatch(/cache effect  \(\$0\.08\) for this context/)
+    expect(result.text).not.toMatch(/cache effect  -/)
     expect(result.text).not.toMatch(/cache effect  \+/)
     expect(result.text).not.toMatch(/none configured/)
     // A zero cache-write rate means warming can never pay for itself.
@@ -554,7 +560,7 @@ describe('the band above the prompt', () => {
     await $.session.start(bandSession)
     await $.turn.complete(turn())
     const band = await bandOf($)
-    expect(band?.text).toContain('55% of 362k')
+    expect(band?.text).toContain('200k / 362k (55%)')
     expect(band?.text).not.toContain('1000k')
   })
 
@@ -575,29 +581,32 @@ describe('the band above the prompt', () => {
     await $.session.start(bandSession)
     await $.turn.complete(turn())
     const band = await bandOf($)
-    expect(band?.text).toContain('20% of 1M')
+    expect(band?.text).toContain('200k / 1M (20%)')
   })
 
-  test('a saving is coloured success', async ($, on) => {
+  test('a saving reports signed money on status, not on the band', async ($, on) => {
     mock.clock(on, { now: START })
-    world(on, { live: { tokens: 299912 }, rawMax: 362000 })
+    const w = world(on, { live: { tokens: 299912 }, rawMax: 362000 })
     await $.session.start(bandSession)
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 141912 }) }))
     // Fable reads at 0.03 against an input of 0.43, so the cache lowers the bill.
+    // The band carries the window/tokens readout with no money; status line carries signed money.
     const band = await bandOf($)
-    expect(band?.text).toContain('-$0.12')
-    expect(band?.colors).toContainEqual({ text: '-$0.12', color: 'success' })
+    expect(band?.text).not.toContain('($0.12)')
+    expect(band?.text).not.toMatch(/[-+]\$/)
+    expect(w.status.at(-1)).toBe('keepwarm off · ($0.12) · /keepwarm to arm the window · /cache-tax for the full card')
   })
 
-  test('a surcharge is coloured error', async ($, on) => {
+  test('a surcharge reports signed money on status, not on the band', async ($, on) => {
     mock.clock(on, { now: START })
-    world(on, { model: 'claude-opus-5-5', live: { tokens: 299912 }, rawMax: 362000 })
+    const w = world(on, { model: 'claude-opus-5-5', live: { tokens: 299912 }, rawMax: 362000 })
     await $.session.start(bandSession)
     await $.turn.complete(turn({ usage: usage({ model: 'claude-opus-5-5' }) }))
     // Opus reads at 0.005 against an input of 0.0007, so the cache raises it.
     const band = await bandOf($)
-    expect(band?.text).toContain('+$0.0013')
-    expect(band?.colors).toContainEqual({ text: '+$0.0013', color: 'error' })
+    expect(band?.text).not.toContain('+$0.0013')
+    expect(band?.text).not.toMatch(/[-+]\$/)
+    expect(w.status.at(-1)).toBe('keepwarm off · +$0.0013 · /keepwarm to arm the window · /cache-tax for the full card')
   })
 
   test('a survey holds the band, and the hook yields to it', async ($, on) => {
@@ -683,7 +692,7 @@ describe('the cache read is a per-turn quantity, not a size held', () => {
     const w = world(on, { live: { tokens: 200000 } })
     await $.session.start(session)
     await $.turn.complete(turn())
-    expect(w.status.at(-1)).toMatch(/· read 200k this turn ·/)
+    expect(w.status.at(-1)).toMatch(/· cache 200k this turn ·/)
     expect(w.status.join('\n')).not.toMatch(/cached/)
   })
 
@@ -695,7 +704,7 @@ describe('the cache read is a per-turn quantity, not a size held', () => {
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 2200000 }) }))
     const text = (await $.command.run(run('cache-tax', ''))).text
-    expect(text).toMatch(/cache read  2,200,000 tokens read from cache this turn, ≈14 × the 155\.2k context/)
+    expect(text).toMatch(/cache       2,200,000 tokens served from cache this turn, ≈14 × the 155\.2k context/)
     // The old line claimed a share of context and capped it at 100%; that claim is gone.
     expect(text).not.toMatch(/% of context/)
   })
@@ -706,7 +715,7 @@ describe('the cache read is a per-turn quantity, not a size held', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     const text = (await $.command.run(run('cache-tax', ''))).text
-    expect(text).toMatch(/cache read  200,000 tokens read from cache this turn/)
+    expect(text).toMatch(/cache       200,000 tokens served from cache this turn/)
     expect(text).not.toMatch(/≈1 ×/)
   })
 })
@@ -816,7 +825,7 @@ describe('the line the band frees', () => {
     await $.command.run(run('keepwarm', '6h'))
     // Armed and warm: a ping is already coming, so there is nothing to suggest
     // and the line does not invent one.
-    expect(w.status.at(-1)).toBe('keepwarm on, 6h00m left · ping in 50m · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · ($0.08) · /cache-tax for the full card')
   })
 
   test('a window that stopped says why, and offers to start another', async ($, on) => {
@@ -831,7 +840,7 @@ describe('the line the band frees', () => {
     await clock.advance(51 * MIN)
     await flush()
     expect(w.status.at(-1)).toBe(
-      'keepwarm stopped: ping not sent (nothing-to-fork) · /keepwarm to arm the window · /cache-tax for the full card',
+      'keepwarm stopped: ping not sent (nothing-to-fork) · ($0.08) · /keepwarm to arm the window · /cache-tax for the full card',
     )
   })
 
@@ -844,7 +853,7 @@ describe('the line the band frees', () => {
   })
 })
 
-// `read <n> this turn` is the turn just gone; the session total is what the cache
+// `cache <n> this turn` is the turn just gone; the session total is what the cache
 // has served since /clear. Both are shown, because they answer different
 // questions: what this turn cost, and what the cache has been worth overall.
 describe('the session read total', () => {
@@ -856,7 +865,7 @@ describe('the session read total', () => {
     await $.turn.complete(turn())
     const card = await $.command.run(run('cache-tax', ''))
     // Two turns of the fixture's 200k read each.
-    expect(card.text).toMatch(/session read  400,000 tokens served from cache over 2 turns since \/clear/)
+    expect(card.text).toMatch(/usage       400,000 tokens served from cache over 2 turns since \/clear/)
   })
 
   test('one turn is reported as one turn, not one turns', async ($, on) => {
@@ -875,8 +884,8 @@ describe('the session read total', () => {
     await $.turn.complete(turn())
     await $.turn.complete(turn())
     const band = await bandOf($)
-    expect(band?.text).toContain('read 200k this turn')
-    expect(band?.text).toContain('read 400k this session')
+    expect(band?.text).toContain('200k cache turn')
+    expect(band?.text).toContain('400k usage session')
   })
 
   test('the band shows no session slot before a turn has reported one', async ($, on) => {
@@ -885,6 +894,7 @@ describe('the session read total', () => {
     await $.session.start(bandSession)
     const band = await bandOf($)
     expect(band?.text ?? '').not.toContain('this session')
+    expect(band?.text ?? '').not.toContain('usage')
   })
 
   test('/clear starts the tally over, because it starts the conversation over', async ($, on) => {
@@ -894,6 +904,130 @@ describe('the session read total', () => {
     await $.turn.complete(turn())
     await $.classic.SessionStart({ ...resume, source: 'clear' })
     const card = await $.command.run(run('cache-tax', ''))
+    expect(card.text).not.toMatch(/usage/)
     expect(card.text).not.toMatch(/session read/)
+  })
+})
+
+describe('approved band and status split', () => {
+  test('exact approved split and field order across band and status line', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    await $.turn.complete(turn())
+    // 1. Band: forecast · <ctx tokens> of <window tokens> (<pct>%) · sparkline · trend · cache <n> this turn · usage <n> this session
+    const band = await bandOf($, { columns: 120 })
+    // The fixture's threshold stands in for the engine's: `rawMax` less 20000, so
+    // 362k less 20k against a 200k context leaves 142k to go.
+    expect(band?.text).toBe('☂  Showers  200k / 362k (55%)  ·  142k to go (39.2%)  ·  ▄▄  ·  steady  ·  200k cache turn  ·  400k usage session')
+    // No warming state, ping, money, or hints in band
+    expect(band?.text).not.toMatch(/keepwarm|ping|left|\$|\/keepwarm|\/cache-tax/)
+
+    // 2. Status unarmed: keepwarm off · signed effect · /keepwarm to arm the window · /cache-tax for the full card
+    expect(w.status.at(-1)).toBe('keepwarm off · ($0.08) · /keepwarm to arm the window · /cache-tax for the full card')
+
+    // 3. Status armed: keepwarm on · <duration> left · [ping] · signed effect · /cache-tax for the full card
+    await $.command.run(run('keepwarm', '6h'))
+    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · ($0.08) · /cache-tax for the full card')
+    // Separate state and countdown with middot not comma
+    expect(w.status.at(-1)).not.toContain('keepwarm on,')
+  })
+
+  test('the band carries the distance to autocompact but not the free space', async ($, on) => {
+    mock.clock(on, { now: START })
+    // The breakdown reports a free row, and the band still leaves it out: free
+    // space and the distance to autocompact always track each other, so drawing
+    // both read as a near-duplicate. The card reports it instead.
+    world(on, { live: { tokens: 200000 }, rawMax: 362000, free: 136600 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('200k / 362k (55%)  ·  142k to go (39.2%)')
+    expect(band?.text).not.toContain('136.6k')
+    const card = (await $.command.run(run('cache-tax', ''))).text
+    expect(card).toMatch(/free        136,600 tokens left in the window \(37\.7%\)/)
+  })
+
+  test('a context past the autocompact threshold says so rather than counting up', async ($, on) => {
+    mock.clock(on, { now: START })
+    // Past the fixture's threshold (rawMax less 20000), which is what /autocompact
+    // fires at, so there is no distance left to report.
+    world(on, { live: { tokens: 350000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('compact due')
+    expect(band?.text).not.toMatch(/to go/)
+  })
+
+  test('unknown effect reports n/a on status and keeps money off the band', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { model: UNCONFIGURED, live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
+    const band = await bandOf($)
+    expect(band?.text).not.toContain('n/a')
+    expect(band?.text).not.toMatch(/[-+]\$/)
+    expect(w.status.at(-1)).toBe('keepwarm off · n/a · /keepwarm to arm the window · /cache-tax for the full card')
+
+    await $.command.run(run('keepwarm', '6h'))
+    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · n/a · /cache-tax for the full card')
+  })
+
+  // A zero effect cannot be reached through the engine fixtures: it needs a model
+  // whose read and input rates are equal, and the rates table is module-private
+  // state that a test cannot write — the exported `RATES` is a different instance
+  // from the one the loaded plugin reads. So the formatter is tested directly,
+  // which is where the three shapes are actually decided.
+  test('the signed effect marks a saving with parentheses, a surcharge with +, and zero with +$0.00', () => {
+    expect(fmtSignedUsd(-0.12)).toBe('($0.12)')
+    expect(fmtSignedUsd(-0.0013)).toBe('($0.0013)')
+    expect(fmtSignedUsd(0.0013)).toBe('+$0.0013')
+    // Zero is a real answer, not an unknown, and it never takes parentheses.
+    expect(fmtSignedUsd(0)).toBe('+$0.00')
+    expect(fmtSignedUsd(null)).toBe('n/a')
+  })
+
+  test('no signed money reaches the band', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($)
+    expect(band?.text).not.toMatch(/\(?\$\d/)
+    expect(band?.text).not.toMatch(/n\/a/)
+    expect(w.status.at(-1)).toBe(HINT_FOOTER)
+  })
+
+  test('no-context case omits effect from status and cache/usage labels from band', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { rawMax: 362000 })
+    await $.session.start(bandSession)
+    const band = await bandOf($)
+    expect(band?.text).toBe('☀  Clear  0 / 362k (0%)')
+    expect(band?.text).not.toContain('cache')
+    expect(band?.text).not.toContain('usage')
+    expect(band?.text).not.toMatch(/keepwarm|ping|left|\$|\/keepwarm|\/cache-tax/)
+    // Effect is omitted when ctx is 0
+    expect(w.status.at(-1)).toBe(NO_CONTEXT_HINT_FOOTER)
+  })
+
+  test('labels disappear appropriately at zero for turn cache and session usage', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    // Turn completes with zero cache read tokens
+    await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 0 }) }))
+    const band = await bandOf($)
+    // Zero turn cache tokens: no cache label
+    expect(band?.text).not.toContain('cache')
+    expect(band?.text).not.toContain('this turn')
+    // Zero session cache tokens: no usage label
+    expect(band?.text).not.toContain('usage')
+    expect(band?.text).not.toContain('this session')
+
+    const card = await $.command.run(run('cache-tax', ''))
+    expect(card.text).toMatch(/cache       none reported by the last turn, so nothing was served from cache/)
   })
 })

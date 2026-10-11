@@ -105,6 +105,19 @@ export type State = {
   percent: number
   /** Where that window came from (the engine's `ContextWindowSource`), or null when only the model's is known. */
   windowSource: string | null
+  /**
+   * Tokens the window has left, from the breakdown's `free` row. The band does not
+   * draw it — it measures nearly the same thing as `compactAt` and so read as a
+   * near-duplicate — but `/cache-tax` reports it, because the card is where the
+   * complete set of figures belongs. Zero when the host reports no breakdown.
+   */
+  free: number
+  /**
+   * The token count auto-compaction fires at, as the engine reports it, or null
+   * when it is off or unreported. Kept so `/cache-tax` can show the engine's own
+   * threshold rather than a guess derived from the window.
+   */
+  compactAt: number | null
   /** Recent readings of the context size, oldest first: the sparkline and the per-turn trend. */
   history: number[]
   /**
@@ -156,10 +169,16 @@ function fmtUsd(usd: number | null): string {
   return '$' + (usd >= 100 ? usd.toFixed(0) : usd.toFixed(2))
 }
 
-/** A signed difference: `+$0.12` costs more, `-$0.00` saves. */
-function fmtSignedUsd(usd: number | null): string {
+/**
+ * A signed difference. A surcharge carries a leading `+`; a saving is wrapped in
+ * parentheses — accounting's own mark for a credit, which reads as a saving
+ * without a minus sign that could be mistaken for a hyphen mid-line. Zero is
+ * `+$0.00`, a real answer rather than an unknown. `n/a` is the unknown: this mod
+ * has no rates for the model, so it computes no figure at all.
+ */
+export function fmtSignedUsd(usd: number | null): string {
   if (usd == null) return 'n/a'
-  return (usd >= 0 ? '+' : '-') + fmtUsd(Math.abs(usd))
+  return usd < 0 ? `(${fmtUsd(-usd)})` : `+${fmtUsd(usd)}`
 }
 
 /**
@@ -196,20 +215,7 @@ function uncachedUsd(s: State): number | null {
   return r ? s.ctx * r.input / 1e6 : null
 }
 
-/**
- * The adjustment the cache makes to the bill for this one context: from cache
- * minus no cache, i.e. the cache-read rate against the input rate. **Negative
- * means the cache lowers the bill** — it is a saving of that much, and the usual
- * case where the read rate is far below the input rate (Fable: 0.03 against
- * 0.43). **Positive means the cache raises it** — the read rate is above the
- * input rate, so serving from cache costs more than not caching and the cache is
- * a surcharge, which some operators' rates genuinely do (Opus: 0.005 against
- * 0.0007).
- *
- * This is the reverse of "what a cold send costs": that is the same magnitude
- * with the opposite sign. The sign here reads as an effect on the bill, so with
- * a colour beside it negative is green and positive is red.
- */
+/** One hypothetical context read, not the turn's summed bill or the cache's current warmth. */
 function cacheEffectUsd(s: State): number | null {
   const uncached = uncachedUsd(s)
   const warm = warmUsd(s)
@@ -260,6 +266,8 @@ export function resetForClear(s: State) {
   s.readSession = 0
   s.turns = 0
   s.percent = 0
+  s.free = 0
+  s.compactAt = null
   s.history = []
   s.notice = null
   disarm(s)
@@ -300,12 +308,12 @@ function nextPingText(s: State, now: number): string | null {
 // The under-composer line, in one fixed field order so the same fact always
 // appears in the same place — durations first, then token counts, then money:
 //
-//   <warming> · [ping] · <context> · [read] · [±]
+//   <warming> · [ping] · <context> · [cache] · [±]
 //
 // warming  off | <time> left | stopped: <why>
 // ping     present only while a window is armed
 // context  no context yet | ctx <tokens> — what the cache could be holding
-// read     absent until a turn reports a cache read: how much it read this turn
+// cache    absent until a turn reports a cache read: how much it read this turn
 // final    absent until a context exists: what the cache does to the bill for
 //          this context, bare and signed. `-` is a saving — the read rate is
 //          below the input rate, so being warm lowers the bill by that much (the
@@ -316,13 +324,15 @@ function nextPingText(s: State, now: number): string | null {
 //          wording that would explain it is what the card is for.
 //
 // The model itself is left out: the picker beside this line already names it, and
-// `/cache-tax` prints the exact ID the rates are keyed on.
+// `/cache-tax` prints the exact ID the rates are keyed on. That model comes from
+// the last turn's own usage and never from a session lookup — at session start
+// the host may not yet have chosen one, and a footer must not be left waiting.
 function statusText(s: State, now: number): string {
   const parts = [warmingText(s, now)]
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
   parts.push(s.ctx > 0 ? `ctx ${fmtTok(s.ctx)}` : 'no context yet')
-  if (s.lastRead > 0) parts.push(`read ${fmtTok(s.lastRead)} this turn`)
+  if (s.lastRead > 0) parts.push(`cache ${fmtTok(s.lastRead)} this turn`)
   if (s.ctx > 0) {
     const effect = cacheEffectUsd(s)
     parts.push(effect == null ? 'n/a' : fmtSignedUsd(effect))
@@ -330,18 +340,7 @@ function statusText(s: State, now: number): string {
   return parts.join(' · ')
 }
 
-// The commands worth running right now, so the line can name the next move
-// rather than only report. With nothing armed a window can be started, and that
-// is the whole point of the line; armed and warm there is nothing to suggest,
-// because a ping is already coming. The card is always last — it is where the
-// figures this line abbreviates are spelled out, so it is the one command that is
-// always worth running.
-//
-// A cold cache gets no clause of its own. It cannot: on a surface that raises the
-// band, going cold is never what repaints this line — the first thing a person
-// does after the cache lapses is send a prompt, and the guard notice takes the
-// slot for that turn. So `/keepwarm` is offered for the state that is actually
-// on screen, which is the same command either way.
+// Desktop clips long status strings and reveals their full text on hover.
 function hintsFor(s: State): string[] {
   const hints: string[] = []
   if (!s.deadline) hints.push('/keepwarm to arm the window')
@@ -349,22 +348,16 @@ function hintsFor(s: State): string[] {
   return hints
 }
 
-// The line for a surface the band already reaches: the band carries the readout
-// in colour, so this says only what the band does not — whether warming is on,
-// when the next ping comes, and what to run next. The state is spelled out as
-// `keepwarm on` / `keepwarm off` rather than the bare countdown the readout uses,
-// so the line stands on its own wherever it is read without the band. A window
-// that stopped says why: the reason is the difference between a window that was
-// never armed and one that was and gave up, and the slot hovers, so the length of
-// it costs nothing.
+// $.ui.status accepts plain text, so the effect is distinguished by sign, not colour.
 function hintText(s: State, now: number): string {
-  const parts = [s.stopped
-    ? `keepwarm stopped: ${s.stopped}`
-    : s.deadline ? `keepwarm on, ${fmtDuration(s.deadline - now)} left` : 'keepwarm off']
-  // The ping is the readout's own clause; it follows the state only while a
-  // window is armed, which is the only state it has anything to say in.
+  const parts = [s.stopped ? `keepwarm stopped: ${s.stopped}` : s.deadline ? 'keepwarm on' : 'keepwarm off']
+  if (s.deadline) parts.push(`${fmtDuration(s.deadline - now)} left`)
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
+  if (s.ctx > 0) {
+    const effect = cacheEffectUsd(s)
+    parts.push(effect == null ? 'n/a' : fmtSignedUsd(effect))
+  }
   return [...parts, ...hintsFor(s)].join(' · ')
 }
 
@@ -374,11 +367,7 @@ function disarm(s: State) {
 }
 
 // --- The AbovePrompt band ----------------------------------------------------
-// The status line takes a plain string and cannot colour, so once this mod owns
-// the session the same facts move to the band above the prompt, where a tree's
-// `Text` does take a colour. The band is one instance and one plugin draws it:
-// a hook that returns a tree answers the site and the chain stops beneath it, so
-// a second plugin hooked on AbovePrompt never draws.
+// Only one plugin can draw AbovePrompt: returning a tree stops the hook chain.
 
 /** Readings the sparkline shows, oldest first. */
 const HISTORY = 12
@@ -445,6 +434,11 @@ async function refreshWindow($: EngineInterface, s: State) {
       s.window = breakdown.rawMaxTokens
       s.percent = Math.round(breakdown.percentage)
       s.windowSource = breakdown.autocompactSource
+      // Branch on `kind`, never on the row's `name`: the engine stamps the kind
+      // and warns the label is a display string that can be reworded.
+      const free = breakdown.categories.find(c => c.kind === 'free')
+      s.free = free && free.tokens > 0 ? free.tokens : 0
+      s.compactAt = typeof breakdown.autoCompactThreshold === 'number' ? breakdown.autoCompactThreshold : null
       return
     }
     if (context.window > 0) {
@@ -452,18 +446,26 @@ async function refreshWindow($: EngineInterface, s: State) {
       s.percent = Math.round(context.percent ?? (s.ctx / context.window) * 100)
       s.windowSource = null
     }
+    // No breakdown means no free row and no threshold; a stale pair is worse than
+    // an absent one, so both are cleared rather than kept.
+    s.free = 0
+    s.compactAt = null
   } catch {
     // No session bound, or a host that answers no breakdown: keep the last reading.
   }
 }
 
 /**
- * The band's tree. Sized to `columns` (the band's own box, which is narrower than
- * the viewport while a pane is docked beside the transcript): the sparkline and
- * the trend are the first things to go, then the cache read.
+ * Width is the band's own box, not the viewport; a docked pane reduces it.
+ * Only the sparkline and trend are dropped for width, never the token counts.
  *
- * The field order groups like kinds — the forecast and its measurement, then the
- * token counts, then the durations, then the one price.
+ * The order is the window first and the history second: the forecast and the fill
+ * it measures, then the room still free and the distance to the point
+ * /autocompact fires, then the readings that say how the fill got here (the
+ * sparkline and the trend) and what the cache served along the way. The two
+ * window figures sit together because they answer one question between them —
+ * how much room is left — and the two history slots follow because they are
+ * derived from the readings rather than being measurements of this moment.
  */
 function band(
   Box: ElementConstructor<BoxProps>,
@@ -473,70 +475,41 @@ function band(
 ) {
   const columns = props.bodyColumns || 80
   const f = forecastFor(s.percent)
-  const now = s.now || 0
   // The table's constructors take children among the props and hand back an
   // element with them beside `props`, which is the shape the engine draws.
   const t = (textProps: TextProps, text: string) => Text({ ...textProps, children: text })
   const dim = (text: string) => t({ dimColor: true }, text)
   const parts: RenderElement[] = [
     t({ color: f.color, bold: true }, `${f.icon}  ${f.word}`),
-    t({ color: f.color }, `  ${s.percent}% of ${fmtTok(s.window)}`),
+    t({ color: f.color }, `  ${fmtTok(s.ctx)} / ${fmtTok(s.window)} (${s.percent}%)`),
   ]
+  // The distance to the point /autocompact actually fires, right after the fill.
+  // This is the window figure worth acting on: the free space the breakdown also
+  // reports measures nearly the same thing and reads as a near-duplicate beside
+  // it, so only this one is drawn. Absent until a context exists — with nothing in
+  // use the figure would only restate the threshold.
+  if (s.compactAt != null && s.ctx > 0) {
+    const toGo = s.compactAt - s.ctx
+    // The share is of the window, like the fill's and the free slot's, so all
+    // three read against one denominator even though only the fill and the free
+    // slot are complements of each other.
+    const share = s.window > 0 ? ` (${((toGo / s.window) * 100).toFixed(1)}%)` : ''
+    parts.push(dim(`  ·  ${toGo > 0 ? `${fmtTok(toGo)} to go${share}` : 'compact due'}`))
+  }
   const spark = columns >= 56 ? sparkline(s.history, s.window) : ''
   if (spark) parts.push(dim('  ·  '), t({ color: f.color }, spark))
   const trend = columns >= 72 ? trendText(s.history) : null
   if (trend) parts.push(dim(`  ·  ${trend}`))
-  if (s.lastRead > 0) parts.push(dim(`  ·  read ${fmtTok(s.lastRead)} this turn`))
+  if (s.lastRead > 0) parts.push(dim(`  ·  ${fmtTok(s.lastRead)} cache turn`))
   // The running total, beside the turn it continues: a turn's read is the figure
   // that moves, the session's is the one that adds up to what the cache has
   // served you since /clear.
-  if (s.readSession > 0) parts.push(dim(`  ·  read ${fmtTok(s.readSession)} this session`))
-  parts.push(dim(`  ·  ${warmingText(s, now)}`))
-  const ping = nextPingText(s, now)
-  if (ping) parts.push(dim(` · ${ping}`))
-  if (s.ctx > 0) {
-    const effect = cacheEffectUsd(s)
-    if (effect == null || effect === 0) {
-      // `n/a` is a price this mod cannot compute, and a configured zero is a real
-      // answer; neither is a saving, so neither is coloured as one.
-      parts.push(dim(`  ·  ${fmtSignedUsd(effect)}`))
-    } else {
-      // Negative lowers the bill (green), positive raises it (red). The theme's
-      // own keys, so the colours follow the person's theme rather than a guess.
-      parts.push(dim('  ·  '), t({ color: effect < 0 ? 'success' : 'error' }, fmtSignedUsd(effect)))
-    }
-  }
+  if (s.readSession > 0) parts.push(dim(`  ·  ${fmtTok(s.readSession)} usage session`))
   return Box({ flexDirection: 'row', paddingX: 1, children: parts })
 }
 
-// The line this mod keeps in its own slot under the prompt. The continuously
-// updating readout — what is armed when a window is, and otherwise what the
-// costing is based on — so the slot says something true about this mod rather
-// than sitting empty. It names the model the engine reports, because that exact
-// ID decides whether rates are found.
-//
-// The host already prints the plugin's own name ahead of this text, so the line
-// never repeats it.
-//
-// The model comes from the last turn's own usage and never from a session lookup:
-// at session start the host may not yet have told the engine which model to use,
-// and a footer must not be left waiting on that. Until the first turn the line
-// says so instead of guessing.
-//
-// Written only while this mod owns the session's command names: the slot holds one
-// entry per plugin, so painting into it while the Original Mod owns the session
-// would clobber that mod's footer. Repainted on session start, before each prompt,
-// and after each turn or command, because a single paint can be lost while the
-// surface is still attaching.
-//
-// The band above the prompt is raised on the desktop and terminal surfaces only,
-// and where it is raised it carries the readout in colour. The slot here is then
-// free to say what the band does not — whether warming is on and what to run — so
-// the readout is never said twice: where the band is up the line is the state and
-// the hints together, and where it is not the line carries the readout with the
-// hints after it. A live notice is not the readout — it is pinned wherever it is
-// set, the band's own surfaces included, and it takes the line until the turn
-// that raised it is over.
+// Status text is shared across connected surfaces. Use the fallback only when
+// none supports the band; a notice temporarily replaces either status form.
 //
 // Which surface this is cannot be read from the one captured at session start: a
 // desktop client can attach a moment after that event, when `e.surface` was still
@@ -561,28 +534,19 @@ async function liveSurfaces($: EngineInterface): Promise<readonly RenderSurface[
 }
 
 // The one place that writes the status line, so a notice and the readout never
-// race each other for it. A live notice outranks everything and shows on every
-// surface, the band's included: it is a one-off thing to read now, not the facts
-// the band keeps current, so it is worth saying even where the band is up.
+// race each other for it. Painted only while this mod owns the session's command
+// names — the slot holds one entry per plugin. A live notice outranks everything
+// and shows on every surface, the band's included: it is a one-off thing to read
+// now, not the facts the band keeps current, so it is worth saying even where the
+// band is up.
 async function publish($: EngineInterface, s: State) {
-  // Stamped whatever happens: the band draws synchronously and reads this rather
-  // than asking the clock again.
   s.now = await $.clock.now()
   if (!s.owns) return
   if (s.notice) {
     $.ui.status(s.notice)
     return
   }
-  // With no notice the line is painted from the surfaces, and which of the two
-  // forms it takes is decided by whether the band is up. Where the band is up it
-  // carries the readout, so the line is free to say what the band does not — the
-  // warming state and the command worth running. Where there is no band the
-  // readout has to be on this line, and the hints are left off rather than
-  // appended: that line is already the longest the slot has to hold, and a hint
-  // that pushes the price off the end costs more than it adds. Repainting is also
-  // what takes a finished notice off the screen. Whether the band is up is asked
-  // fresh; when the ask fails the captured surface is the last honest word, so a
-  // silent host never hides the readout by accident.
+  // A client can attach after session.start, so ask the live roster on every paint.
   const live = await liveSurfaces($)
   const raised = live ? live.some(surface => BAND_SURFACES.has(surface)) : BAND_SURFACES.has(s.surface)
   $.ui.status(raised ? hintText(s, s.now) : statusText(s, s.now))
@@ -710,6 +674,18 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   else lines.push(`state       warm, ${fmtDuration(s.lastRequestAt + TTL_MS - now)} left`)
   lines.push(`context     ${s.ctx.toLocaleString('en-US')} tokens, the most the cache can be holding`)
   lines.push(`window      ${s.window ? `${fmtTok(s.window)} (${s.percent}% used)` : 'not reported yet'}${windowNote(s)}`)
+  // The band leaves this one out because it tracks `compact` too closely; the card
+  // is where the complete set of figures belongs.
+  if (s.free > 0 && s.window > 0) {
+    lines.push(`free        ${s.free.toLocaleString('en-US')} tokens left in the window (${((s.free / s.window) * 100).toFixed(1)}%)`)
+  }
+  if (s.compactAt != null && s.window > 0) {
+    // The engine's own threshold, so the fill can be read against the point where
+    // /autocompact actually fires rather than against the window.
+    const left = s.compactAt - s.ctx
+    lines.push(`compact     auto-compaction at ${s.compactAt.toLocaleString('en-US')} tokens ` +
+      `(${Math.round((s.compactAt / s.window) * 100)}% of the window), ${left > 0 ? `${fmtTok(left)} to go` : 'already past it'}`)
+  }
   // Both surfaces, so the next session can see what the start value actually was
   // against what the session draws on now — the pair that decides the status line.
   const live = surfaces == null ? 'unavailable' : surfaces.length ? surfaces.join(', ') : '(none)'
@@ -718,26 +694,26 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   // model calls summed, so a long agentic turn reads the context once per call
   // and the total can run to many times the context it was reading.
   if (s.lastRead > 0) {
-    const total = `${s.lastRead.toLocaleString('en-US')} tokens read from cache this turn`
+    const total = `${s.lastRead.toLocaleString('en-US')} tokens served from cache this turn`
     if (s.ctx > 0 && s.lastRead >= 2 * s.ctx) {
       const multiple = Math.round(s.lastRead / s.ctx)
-      lines.push(`cache read  ${total}, ≈${multiple} × the ${fmtTok(s.ctx)} context — one read per model call`)
+      lines.push(`cache       ${total}, ≈${multiple} × the ${fmtTok(s.ctx)} context — one read per model call`)
     } else {
-      lines.push(`cache read  ${total}`)
+      lines.push(`cache       ${total}`)
     }
   } else if (s.lastRequestAt) {
-    lines.push('cache read  none reported by the last turn, so nothing was served from cache')
+    lines.push('cache       none reported by the last turn, so nothing was served from cache')
   }
   // The running total and what it was summed over, so the figure on the band is
   // one command away from being checkable rather than taken on trust.
   if (s.turns > 0) {
-    lines.push(`session read  ${s.readSession.toLocaleString('en-US')} tokens served from cache over ${s.turns} turn${s.turns === 1 ? '' : 's'} since /clear`)
+    lines.push(`usage       ${s.readSession.toLocaleString('en-US')} tokens served from cache over ${s.turns} turn${s.turns === 1 ? '' : 's'} since /clear`)
   }
   if (r) {
     lines.push(`unit prices input ${r.input} · read ${r.cacheRead} · write ${r.cacheWrite} · output ${r.output} USD/MTok (${RATE_SOURCE}; prices, not costs)`)
     lines.push(`for ${fmtTok(s.ctx)} tokens   re-write ${fmtUsd(coldUsd(s))} (write rate) · from cache ${fmtUsd(warmUsd(s))} (read rate) · no cache ${fmtUsd(uncachedUsd(s))} (input rate)`)
     const effect = cacheEffectUsd(s)
-    lines.push(`cache effect  ${fmtSignedUsd(effect)} for this context: "from cache" minus "no cache". Negative is a saving — the read rate is below the input rate, so being warm lowers the bill by that much. Positive is a surcharge — the read rate is above the input rate, so the cache costs more than it saves`)
+    lines.push(`cache effect  ${fmtSignedUsd(effect)} for this context: "from cache" minus "no cache". A saving is parenthesised — the read rate is below the input rate, so being warm lowers the bill by that much. A surcharge takes a leading + — the read rate is above the input rate, so the cache costs more than it saves`)
   } else {
     lines.push(`unit prices none configured for this model, so no cost can be shown (n/a)`)
   }
@@ -762,7 +738,8 @@ export function freshState(): State {
     sid: '', deadline: 0, every: PING_AFTER_MS, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
     guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0,
     readSession: 0, turns: 0, owns: false,
-    window: 0, percent: 0, windowSource: null, history: [], now: 0, surface: '', notice: null,
+    window: 0, percent: 0, windowSource: null, free: 0, compactAt: null,
+    history: [], now: 0, surface: '', notice: null,
   }
 }
 
@@ -905,8 +882,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     s.sid = await $.session.id()
-    // The band is raised on the desktop and terminal surfaces only, so which one
-    // this is decides whether the status line is the fallback or is left empty.
+    // Keep the captured surface as a fallback if the live roster cannot be read.
     s.surface = e.surface ?? ''
     const now = await $.clock.now()
     await prune($, s, now)
