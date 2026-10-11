@@ -7,8 +7,8 @@ a price comparison, and suggested commands beside the model picker.
   room is left, how far away `/autocompact` is, and how many tokens the prompt
   cache served.
 - **The status line** carries whether `/keepwarm` is armed, when it will ping, and
-  what the cache-read rate means for the current context — or, where the band is
-  not drawn, the same window facts in a compact form.
+  what the cache-read rate means for the current context — or, while the band is
+  down, the same window facts in a compact form.
 - **Notices** temporarily replace the status line's normal text when something
   needs attention.
 
@@ -29,9 +29,10 @@ claude plugin marketplace add gelwuyl/token-tax-weather
 claude plugin install token-tax-weather@token-tax-weather
 ```
 
-The band is supported on **desktop** and **terminal**. When no connected surface
-supports the band, the status line carries a compact **fallback** instead. The
-fallback is not an extra readout alongside the band.
+The band is supported on **desktop** and **terminal**. Where no connected surface
+supports it, the status line carries the same window facts itself — the
+[band-down form](#the-band-down-form-while-no-surface-raises-the-band). That is a
+substitution, not an extra readout beside the band.
 
 ## Commands
 
@@ -116,21 +117,47 @@ decide what it says:
    everything, on every surface, the band's included.
 2. **Otherwise, is the band drawing?** That decides which facts the line carries.
 
-So there is a **notice**, and below it a **line with two forms**. Only one of the
-two forms can ever draw, and a notice pre-empts both:
+So there is a **notice**, and below it a **line that changes with the band**. Only
+one of the two can ever draw, and a notice pre-empts both:
 
 | | Drawn when | Carries |
 | --- | --- | --- |
 | **a notice** | an event needs attention now | what happened, the figure, what to do |
-| **the warming form** | no notice, and the band is drawing | warming state, ping, price, command hints |
-| **the window form** | no notice, and no surface raises the band | warming state, ping, context, cache, price |
+| **the band-up form** | no notice, and the band is drawing | warming state, ping, price, command hints |
+| **the band-down form** | no notice, and no surface raises the band | warming state, ping, context, cache, price |
 
-The two forms exist because the band and the line share the work. Where the band
-draws it already carries the window, so the line says what the band cannot — the
-warming and the command worth running. Where no band draws, nothing else is
+The two forms exist because the band and the line share the work. While the band
+is up it already carries the window, so the line says what the band cannot — the
+warming and the command worth running. While the band is down, nothing else is
 showing the window, so the line has to. On the desktop and terminal surfaces you
-only ever see the warming form; the window form is for a session attached to VS
-Code or a phone.
+only ever see the band-up form; the band-down form is for a session attached to
+VS Code or a phone.
+
+#### When the line repaints
+
+The band redraws itself whenever the app redraws the composer, so it is always
+current. **The status line is not** — it is a value the app holds until something
+sets it again, so it changes only when this plugin repaints it. Those moments are:
+
+| Repaints at | Why then |
+| --- | --- |
+| session start, and again 3 seconds later | the desktop surface attaches just after the session starts, so the first paint can be dropped |
+| a resumed session | a cold-resume notice has to be shown before any turn runs |
+| a prompt is sent | the surface is certainly live by the first prompt, and a guard notice belongs to the prompt it warns about |
+| a turn finishes | the context, the cache figure and the price have all changed |
+| `/keepwarm` is run, and when a window arms or stops | the state it reports is the thing that just changed |
+
+It does **not** repaint on a timer, and it does not repaint when you leave it
+alone: a countdown in that row stands still until the next turn or command, so a
+line left across a long idle gap reads older than it is. Switching to another
+session shows that session's own row, painted at its own last event rather than
+refreshed on the way in. The band above it, being redrawn by the app, stays
+current throughout.
+
+Because a notice is put on this row and taken off again at the end of its turn,
+it is a **thing to read now**, not a durable state: a notice is guaranteed to be
+visible for at least the turn it belongs to, and a cold-write notice for the turn
+after it as well.
 
 The app clips this row and reveals the rest on hover, so the plugin writes the
 whole string and a long line costs nothing. It is plain text: the price comparison
@@ -168,7 +195,7 @@ notices clear at the end of the turn they belong to; the cold-write notice is
 raised at the end of its turn and so outlives it by one. A guard never blocks or
 drops a prompt. The rates behind each figure are in `/cache-tax`.
 
-#### The warming form, where the band is drawing
+#### The band-up form, while the band is drawing
 
 ```text
 <state> · [<duration> left] · [ping] · [<effect>] · [/keepwarm to arm the window] · /cache-tax for the full card
@@ -203,10 +230,10 @@ keepwarm stopped: ping not sent (nothing-to-fork) · ($0.09) · /keepwarm to arm
 - **`stopped` names why a window gave up**, which is the difference between a
   window you never armed and one that was armed and stopped.
 
-#### The window form, where no surface raises the band
+#### The band-down form, while no surface raises the band
 
 The same facts, compactly, with the context as a bare token count because there is
-no room for the window beside it. It is the warming form plus the window, minus
+no room for the window beside it. It is the band-up form plus the window, minus
 the hints.
 
 ```text
@@ -216,10 +243,10 @@ the hints.
 | # | Slot | Forms | Shown when |
 | --- | --- | --- | --- |
 | 1 | **warming** | `off` · `<duration> left` · `stopped: <reason>` | Always |
-| 2 | **ping** | As the warming form's | A warming window is armed |
+| 2 | **ping** | As the band-up form's | A warming window is armed |
 | 3 | **context** | `ctx <tokens>` · `no context yet` | Always |
 | 4 | **cache** | `<tokens> cache turn` | The last turn served something from cache |
-| 5 | **effect** | As the warming form's | A context exists |
+| 5 | **effect** | As the band-up form's | A context exists |
 
 Examples:
 
@@ -236,6 +263,65 @@ off · no context yet
   not there.
 - **`warming` drops the `keepwarm` prefix.** The state word is the same, but this
   form is already the longest the row has to hold.
+
+## What `/keepwarm` actually sends
+
+Warming is **a model request, not a header**. Arming a window sends nothing at
+all; it only sets a timer. When the timer fires, the plugin calls the engine's
+fork, which re-sends the session's own transcript as the main thread last sent
+it — its model, system prompt, tools and messages — with one short message after
+it:
+
+```text
+Reply with the single word: warm
+```
+
+The engine describes that call as existing "so the API serves that prefix from its
+cache". It is tool-less, and the message itself is never cached. It goes wherever
+your session's requests already go: the plugin sets no cache directive, names no
+provider, and never talks to a provider API itself. It asks the engine, and the
+engine routes the request exactly as it routes your own prompt.
+
+**Why a request is what warms a cache.** Prompt caching is provider-side: the
+provider keeps a processed prefix and charges a reduced rate to read it again, and
+every provider that does this expires the stored prefix after some idle time.
+Sending the prefix again is what resets that clock. So a ping is not asking anyone
+to keep something — it is *using* the cache, which is the thing that stops the
+cache from being dropped.
+
+**Whether it works where you are is reported, not assumed.** The ping's reply
+carries the engine's own token counts, and the plugin reads them:
+
+| The ping's reply | What the plugin does |
+| --- | --- |
+| read > 0, and a write under 10% of that read | counts the prefix served from cache; the window stays armed |
+| read 0, or a write as large as the read | stops the window, saying `the cache was gone` and giving both counts |
+
+`/cache-tax` prints the last ping's two counts and its cost, marked `(warm)` or
+`(the cache was gone)`, and a stopped window carries the same reason on the status
+line. So a setup where warming does nothing announces itself here rather than on
+a bill.
+
+Three consequences worth being explicit about:
+
+- **Automatic caching needs no header.** Anthropic's API takes explicit
+  `cache_control` breakpoints; several other providers cache a long-enough prompt
+  on their own, with nothing in the request to mark it. A ping warms either kind,
+  because both kinds are warmed by reuse. This is why the plugin can stay
+  provider-agnostic: it never has to know which kind it is talking to.
+- **The plugin cannot turn on caching the harness is not already asking for.** If
+  nothing upstream marks a prefix as cacheable, a ping reads nothing and the
+  window stops. That is the plugin reporting your setup accurately, not the ping
+  failing.
+- **A router's response cache is a different thing.** OpenRouter and similar
+  gateways also keep a cache of *whole responses* keyed on the exact request. That
+  is not prompt caching, this plugin neither controls nor observes it, and a
+  prompt-cache hit is no evidence of a response-cache hit — see
+  [Privacy and limits](#privacy-and-limits).
+
+The break-even is in [Reading the price comparison](#reading-the-price-comparison):
+warming pays only when a cache read costs less than the write it avoids. With the
+shipped rates, where `cacheWrite` is `0`, it does not.
 
 ## Reading the price comparison
 
