@@ -34,22 +34,44 @@ The band is raised on the **desktop** and **terminal** surfaces. On the
 surfaces that do not raise it the same facts go to the status line instead,
 without colour, so the two never both draw the readout.
 
-## Notices
+## The two families
 
-The band carries the continuously-updating facts: the forecast, the cache read,
-the countdown, the price. The one-off notices are different. A cold resume, a
-cold send the guard warns about, and a cold write it records are pinned on the
-status line under the prompt — not in the transcript — so they are read once
-where you are working, rather than scrolled back to. A notice stays up while the
-turn it belongs to runs and clears when that turn finishes; a second notice
-simply replaces the first. Unlike the readout, a notice is shown on every
-surface, the band's own included.
+Everything this plugin draws belongs to one of two families, and these are the
+names this README uses for them.
+
+**The readout** is the continuously-updating state: the forecast, the cache read,
+the countdown, the price. It has two renderings, and they are two renderings of
+the *same* facts, which is why only one of them ever draws:
+
+| Rendering | Where | In colour |
+| --- | --- | --- |
+| **the band** | desktop and terminal, above the prompt | yes |
+| **the fallback** | the status line, on the surfaces that raise no band | no |
+
+**The notices** are the one-off messages. There are three, named for what raises
+them:
+
+| Notice | Raised when |
+| --- | --- |
+| **the resume notice** | a session resumes or forks and its prompt cache is likely expired |
+| **the guard notice** | a prompt is sent after the cache has gone cold |
+| **the cold-write notice** | a turn wrote a fresh cache entry |
+
+They are pinned on the status line under the prompt — not in the transcript — so
+they are read once where you are working rather than scrolled back to. A notice
+outranks the readout on **every** surface, the band's own included, because it is
+something to read now rather than a fact to keep current. Among themselves the
+last one raised replaces the one before: there is a single slot. A notice stays
+up while the turn it belongs to runs and clears when that turn finishes — except
+the cold-write notice, which is raised at the end of its turn and so outlives it
+by one.
 
 Each notice is written to fit one line. The status line shares its row with the
 model picker and the app clips what does not fit, so a notice says what happened
-and what it costs, and stops there — hovering shows the same text, no more. The
-rates behind the figure, and what to do about a cold cache, are in `/cache-tax`,
-which has the room for them.
+and what it costs, and stops there. Hovering a clipped line shows the rest of the
+same text, no more — which is why the notices are short by design rather than
+long and hovered. The rates behind the figure, and what to do about a cold cache,
+are in `/cache-tax`, which has the room for them.
 
 ## Commands
 
@@ -64,11 +86,13 @@ which has the room for them.
 | `/cache-tax` | The full card: state, window, prices, the cache's effect, break-even |
 | `/cache-tax-diagnostic` | Read-only. What the host's pricing interface exposes, and nothing else |
 
-## What the band can say
+## What the readout can say
 
-The band is one line, and every slot in it is optional — a slot with nothing to
-say is dropped rather than left blank. Against a 362k window (the size
-`/autocompact` fires on, not the model's raw limit) the five forecasts read:
+This is the band's rendering of the readout; the fallback says the same things in
+fewer slots, and [below](#the-readouts-fallback-rendering) is that one. The band is
+one line, and every slot in it is optional — a slot with nothing to say is dropped
+rather than left blank. Against a 362k window (the size `/autocompact` fires on,
+not the model's raw limit) the five forecasts read:
 
 ```text
 ☀  Clear         18% of 362k · ▁▁▂▁▂▁▂▂▁▂▂▁ · ▼ 4k last turn · read 62.1k this turn · off · -$0.03
@@ -120,12 +144,12 @@ has actually served something from cache. The two are told apart by what is stil
 there — a band with no `read` slot is reporting that the last turn served nothing,
 since that slot is never dropped for width.
 
-### The same states on the status line
+### The readout's fallback rendering
 
 Where the band is raised — **desktop** and **terminal** — the status line is left
 empty on purpose. The band is already saying all of it in colour, and the same
 thing is never said twice, so the status line there carries only the one-off
-[notices](#notices).
+[notices](#the-two-families).
 
 On the surfaces that raise no band the same facts fall back to the status line,
 without colour and in a fixed order:
