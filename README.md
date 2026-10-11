@@ -45,6 +45,12 @@ turn it belongs to runs and clears when that turn finishes; a second notice
 simply replaces the first. Unlike the readout, a notice is shown on every
 surface, the band's own included.
 
+Each notice is written to fit one line. The status line shares its row with the
+model picker and the app clips what does not fit, so a notice says what happened
+and what it costs, and stops there — hovering shows the same text, no more. The
+rates behind the figure, and what to do about a cold cache, are in `/cache-tax`,
+which has the room for them.
+
 ## Commands
 
 | Command | What it does |

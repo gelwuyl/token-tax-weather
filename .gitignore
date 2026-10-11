@@ -2,3 +2,8 @@
 # it. They are this build's, not this plugin's, and must never be committed.
 **/.claude-plugin/types/
 node_modules/
+
+# `plugin test` compiles each .ts beside it. Those siblings are build output,
+# rewritten on every run, and never the source of truth.
+token-tax-weather/hooks/*.js
+token-tax-weather/tests/*.js

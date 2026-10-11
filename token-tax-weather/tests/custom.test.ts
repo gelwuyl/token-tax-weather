@@ -187,11 +187,13 @@ describe('guard', () => {
     const result = await $.prompt.submit(prompt('hi'))
     expect(result.drop).toBe(undefined)
     expect(w.entered).toEqual(['hi'])
-    // The warning is a status-line notice now, not a transcript line.
+    // The warning is a status-line notice now, not a transcript line, and it is
+    // written to fit the one line the app gives that slot.
     const warning = w.status.at(-1) ?? ''
-    expect(warning).toMatch(/the prompt cache went cold/)
-    expect(warning).toMatch(/Sending anyway\./)
-    expect(w.logs.join('\n')).not.toMatch(/the prompt cache went cold/)
+    expect(warning).toMatch(/^cold \d+.* · re-write ≈\$/)
+    expect(warning).toMatch(/ · sending$/)
+    expect(warning.length).toBeLessThanOrEqual(NOTICE_MAX)
+    expect(w.logs.join('\n')).not.toMatch(/re-write ≈/)
   })
 })
 
@@ -629,6 +631,11 @@ const resume: Parameters<Engine['classic']['SessionStart']>[0] = {
   seconds_since_last_response: 2 * HOUR, prompt_cache_likely_expired: true,
 }
 
+// The status line shares one row with the model picker, and the app clips what
+// does not fit. So a notice is written to a budget rather than to a sentence,
+// and this is that budget: the longest notice the mod is allowed to raise.
+const NOTICE_MAX = 44
+
 describe('status-line notices', () => {
   test('a cold resume pins the notice on the band surface, and the turn clears it', async ($, on) => {
     mock.clock(on, { now: START })
@@ -637,7 +644,8 @@ describe('status-line notices', () => {
     await $.classic.SessionStart(resume)
     // The band surface normally leaves the status line empty, but a notice is not
     // the readout: it is pinned wherever it is set, the band's own surface included.
-    expect(w.status.at(-1)).toMatch(/^resuming cold\./)
+    expect(w.status.at(-1)).toMatch(/^cold resume · /)
+    expect((w.status.at(-1) ?? '').length).toBeLessThanOrEqual(NOTICE_MAX)
     await $.turn.complete(turn())
     // No cold write this turn, so the notice is cleared and the line is empty again.
     expect(w.status.at(-1)).toBe(undefined)
@@ -651,7 +659,7 @@ describe('status-line notices', () => {
     expect(w.status.at(-1) ?? '').toMatch(/^off · /)
     await $.classic.SessionStart(resume)
     // A live notice takes precedence over them.
-    expect(w.status.at(-1)).toMatch(/^resuming cold\./)
+    expect(w.status.at(-1)).toMatch(/^cold resume · /)
     expect(w.status.at(-1) ?? '').not.toMatch(/^off · /)
   })
 
@@ -661,9 +669,10 @@ describe('status-line notices', () => {
     await $.session.start(session)
     // A full rewrite this turn: 60k written against a 100k context.
     await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 60000 }) }))
-    expect(w.status.at(-1)).toMatch(/^cold write of 60k tokens/)
+    expect(w.status.at(-1)).toMatch(/^cold write 60k · /)
+    expect((w.status.at(-1) ?? '').length).toBeLessThanOrEqual(NOTICE_MAX)
     // The transcript no longer carries it.
-    expect(w.logs.join('\n')).not.toMatch(/cold write of/)
+    expect(w.logs.join('\n')).not.toMatch(/cold write/)
     // It outlives its own turn; the next ordinary turn clears it and the readout returns.
     await $.turn.complete(turn())
     expect(w.status.at(-1) ?? '').toMatch(/^off · /)

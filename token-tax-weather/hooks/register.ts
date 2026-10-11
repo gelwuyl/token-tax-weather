@@ -222,14 +222,12 @@ function isCold(s: State, now: number): boolean {
   return s.lastRequestAt > 0 && !s.compacted && now - s.lastRequestAt >= TTL_MS
 }
 
+// One line, because the status line is one line in a slot the app fixes the
+// width of. What fits is how long the cache has been gone and what sending
+// anyway costs; the rates behind that figure, and what a warm turn would have
+// cost instead, are in /cache-tax, which has room for them.
 function guardText(s: State, now: number): string {
-  const r = ratesFor(s.lastModel)
-  const rate = r ? `$${r.cacheWrite}/MTok` : 'the cache-write rate'
-  const warm = warmUsd(s)
-  const basis = r ? ` (${RATE_SOURCE})` : ' (no rates configured for this model)'
-  return `the prompt cache went cold ${fmtDuration(now - s.lastRequestAt - TTL_MS)} ago. Sending this re-writes ` +
-    `up to ${s.ctx.toLocaleString('en-US')} tokens at ${rate} = ${fmtUsd(coldUsd(s))}` +
-    (warm == null ? '' : ` (a warm turn would have cost ${fmtUsd(warm)})`) + basis + '.'
+  return `cold ${fmtDuration(now - s.lastRequestAt - TTL_MS)} · re-write ≈${fmtUsd(coldUsd(s))}`
 }
 
 export type ResumeFields = {
@@ -264,7 +262,12 @@ export function seedFromResume(s: State, e: ResumeFields, now: number): string |
   s.compacted = false
   if (e.prompt_cache_likely_expired !== true || s.ctx < BIG_TOKENS) return null
   const usd = typeof e.estimated_cache_write_usd === 'number' ? fmtUsd(e.estimated_cache_write_usd) : fmtUsd(coldUsd(s))
-  return `resuming cold. The first message re-writes ${s.ctx.toLocaleString('en-US')} tokens, about ${usd}. /clear and paste a summary if you only need the conclusions.`
+  // Same one-line budget as the guard. The advice that used to ride along here
+  // -- /clear and paste a summary if you only need the conclusions -- is in the
+  // /cache-tax card, which is where there is room to read it.
+  return usd === 'n/a'
+    ? 'cold resume · the next message re-writes the context'
+    : `cold resume · first message ≈${usd}`
 }
 
 /** The warming slot on its own: off, a countdown, or why it stopped. */
@@ -640,6 +643,9 @@ function card(s: State, now: number): string {
   } else {
     lines.push(`unit prices none configured for this model, so no cost can be shown (n/a)`)
   }
+  // The line the shortened notices gave up. Said here, where there is room, and
+  // only when it applies.
+  if (isCold(s, now)) lines.push('cold note   the next message re-writes the context at the write rate. /keepwarm holds it; /clear and paste a summary if you only need the conclusions.')
   const armed = s.deadline ? `on, ${warmingText(s, now)}` : 'off (/keepwarm to arm it for 6h00m)'
   lines.push(`keepwarm    ${s.stopped ? `stopped, ${s.stopped}` : armed}`)
   if (s.last) lines.push(`last ping   read ${fmtTok(s.last.read)} from cache, wrote ${fmtTok(s.last.write)}, ${fmtUsd(s.last.usd)}${s.last.warm ? ' (warm)' : ' (the cache was gone)'}`)
@@ -940,7 +946,7 @@ export const register: Register = on => {
       // Warn only: the prompt always goes through, whatever the guard says. The
       // warning is a notice on the status line, not a transcript line, and it
       // stays up while the turn it belongs to runs.
-      s.notice = `${guardText(s, now)} Sending anyway.`
+      s.notice = `${guardText(s, now)} · sending`
       s.coldWritePending = true
     }
     // The surface may still have been attaching when session start painted, so
@@ -987,7 +993,7 @@ export const register: Register = on => {
         s.misses.push({ at: now, tokens: write, usd })
         // No warming is armed here: a cold write is recorded and reported, never
         // answered with spending. /keepwarm is the only thing that arms a window.
-        notice = `cold write of ${fmtTok(write)} tokens${usd == null ? '' : ` (${fmtUsd(usd)}, ${RATE_SOURCE})`} recorded. Run /keepwarm to hold the cache; this mod will not arm it for you.`
+        notice = `cold write ${fmtTok(write)}${usd == null ? '' : ` · ${fmtUsd(usd)}`} · /keepwarm`
       }
     }
     s.coldWritePending = false
