@@ -430,8 +430,11 @@ function hintsFor(s: State): string[] {
 }
 
 // $.ui.status accepts plain text, so the effect is distinguished by sign, not colour.
+// The state word drops the `keepwarm` prefix, as the other form's already does:
+// the row is one line in a fixed slot, and the command it names is on the same
+// line as a hint anyway.
 function hintText(s: State, now: number): string {
-  const parts = [s.stopped ? `keepwarm stopped: ${s.stopped}` : s.deadline ? 'keepwarm on' : 'keepwarm off']
+  const parts = [s.stopped ? `stopped: ${s.stopped}` : s.deadline ? 'on' : 'off']
   if (s.deadline) parts.push(`${fmtDuration(s.deadline - now)} left`)
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)

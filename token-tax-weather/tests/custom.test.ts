@@ -24,8 +24,8 @@ const NO_MODEL_FOOTER = 'off · no context yet'
 const IDLE_FOOTER = 'off · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%'
 // The line where the band is raised: the band carries the readout, so this slot
 // carries the warming state, signed money, and hints.
-const HINT_FOOTER = 'keepwarm off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card'
-const NO_CONTEXT_HINT_FOOTER = 'keepwarm off · /keepwarm to arm the window · /cache-tax for the full card'
+const HINT_FOOTER = 'off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card'
+const NO_CONTEXT_HINT_FOOTER = 'off · /keepwarm to arm the window · /cache-tax for the full card'
 
 // The band above the prompt is raised on `desktop` and `terminal` only, so the
 // shared session is a `vscode` one: the status line is the fallback there, and
@@ -395,7 +395,7 @@ describe('/keepwarm', () => {
     const w = world(on, {})
     await $.session.start(session)
     const result = await $.command.run(run('keepwarm', '90m'))
-    expect(result.text).toMatch(/keepwarm on for 1h30m/)
+    expect(result.text).toMatch(/on for 1h30m/)
   })
 
   test('2h30m arms a combined two-and-a-half-hour window', async ($, on) => {
@@ -697,7 +697,7 @@ describe('the band above the prompt', () => {
     const band = await bandOf($)
     expect(band?.text).not.toContain('($0.12)')
     expect(band?.text).not.toMatch(/[-+]\$/)
-    expect(w.status.at(-1)).toBe('keepwarm off · $0.0090 of $0.13, 7% · /keepwarm to arm the window · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('off · $0.0090 of $0.13, 7% · /keepwarm to arm the window · /cache-tax for the full card')
   })
 
   // No row in the table has a read rate above its input rate any more, so the
@@ -712,7 +712,7 @@ describe('the band above the prompt', () => {
     const band = await bandOf($)
     expect(band?.text).not.toContain('$0.0015')
     expect(band?.text).not.toMatch(/[-+]\$/)
-    expect(w.status.at(-1)).toBe('keepwarm off · $0.0015 of $0.01, 14% · /keepwarm to arm the window · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('off · $0.0015 of $0.01, 14% · /keepwarm to arm the window · /cache-tax for the full card')
   })
 
   test('a survey holds the band, and the hook yields to it', async ($, on) => {
@@ -931,7 +931,7 @@ describe('the line the band frees', () => {
     await $.command.run(run('keepwarm', '6h'))
     // Armed and warm: a ping is already coming, so there is nothing to suggest
     // and the line does not invent one.
-    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
   })
 
   test('a window that stopped says why, and offers to start another', async ($, on) => {
@@ -946,7 +946,7 @@ describe('the line the band frees', () => {
     await clock.advance(51 * MIN)
     await flush()
     expect(w.status.at(-1)).toBe(
-      'keepwarm stopped: ping not sent (nothing-to-fork) · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card',
+      'stopped: ping not sent (nothing-to-fork) · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card',
     )
   })
 
@@ -1030,12 +1030,12 @@ describe('approved band and status split', () => {
     // No warming state, ping, money, or hints in band
     expect(band?.text).not.toMatch(/keepwarm|ping|left|\$|\/keepwarm|\/cache-tax/)
 
-    // 2. Status unarmed: keepwarm off · signed effect · /keepwarm to arm the window · /cache-tax for the full card
-    expect(w.status.at(-1)).toBe('keepwarm off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card')
+    // 2. Status unarmed: off · signed effect · /keepwarm to arm the window · /cache-tax for the full card
+    expect(w.status.at(-1)).toBe('off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card')
 
-    // 3. Status armed: keepwarm on · <duration> left · [ping] · signed effect · /cache-tax for the full card
+    // 3. Status armed: on · <duration> left · [ping] · signed effect · /cache-tax for the full card
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
     // Separate state and countdown with middot not comma
     expect(w.status.at(-1)).not.toContain('keepwarm on,')
   })
@@ -1104,10 +1104,10 @@ describe('approved band and status split', () => {
     const band = await bandOf($)
     expect(band?.text).not.toContain('n/a')
     expect(band?.text).not.toMatch(/[-+]\$/)
-    expect(w.status.at(-1)).toBe('keepwarm off · n/a · /keepwarm to arm the window · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('off · n/a · /keepwarm to arm the window · /cache-tax for the full card')
 
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('keepwarm on · 6h00m left · ping in 50m · n/a · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('on · 6h00m left · ping in 50m · n/a · /cache-tax for the full card')
   })
 
   // A zero effect cannot be reached through the engine fixtures: it needs a model
