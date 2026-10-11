@@ -325,16 +325,30 @@ shipped rates, where `cacheWrite` is `0`, it does not.
 
 ## Reading the price comparison
 
-The **effect** is:
+`/cache-tax` shows **what one read of the context you have right now costs**, three
+ways, each measured against the same baseline:
 
 ```text
-context tokens × (cache-read rate − uncached-input rate) / 1,000,000
+cost        for 66.7k tokens   no cache $0.03 = 100%
+                               from cache $0.0020 = 7% of that
+                               re-write $0.00 = 0% of that
 ```
 
-- **A saving** is shown in parentheses, `($0.12)`: reading this context from
-  cache costs less than uncached input. Parentheses are accounting's own mark for
-  a credit, and avoid a minus sign that could be read as a hyphen.
-- **A surcharge** carries a leading `+`, `+$0.12`: reading it from cache costs
+- **`no cache`** is the baseline: the whole context sent as ordinary input.
+- **`from cache`** is the same context read from a warm cache.
+- **`re-write`** is the context written to the cache afresh, after it has expired.
+
+The share beside each is of the baseline, so the comparison can be read without
+knowing any rate. A share that is real but rounds away shows `<1%` rather than
+`0%`, which keeps "nearly nothing" apart from "nothing".
+
+The **effect** is `from cache` minus `no cache` — the difference between two of
+those figures:
+
+- **A saving** is shown in parentheses, `($0.03)`: reading this context from cache
+  costs less than uncached input. Parentheses are accounting's own mark for a
+  credit, and avoid a minus sign that could be read as a hyphen.
+- **A surcharge** carries a leading `+`, `+$0.03`: reading it from cache costs
   more than uncached input.
 - **Zero** is `+$0.00`: the two input costs are equal. It is a real answer, and it
   never takes parentheses.
@@ -344,6 +358,11 @@ It is a hypothetical comparison for **one read of the current context**. It is
 not the turn's bill, accumulated savings, or warming break-even. Its value does
 not tell you whether the cache is warm; it depends only on rates and context
 size. The `/cache-tax` card separately explains whether warming can pay for itself.
+
+Providers publish rates per million tokens, and this plugin's are no exception —
+but a rate is not a bill, so the card shows the bill for the context in hand. The
+rates themselves, and where each one came from, are the subject of
+`/cache-tax-diagnostic`.
 
 ## The rates
 

@@ -5,7 +5,7 @@ import type {
   ContextWindowSource, SessionContextUsage, SessionStartInput, Settings, SettingsSource, TurnCompleteInput, TurnUsage,
 } from 'claude-code'
 
-import { RATES, fmtSignedUsd, ratesFor } from '../hooks/register'
+import { RATES, fmtShare, fmtSignedUsd, ratesFor } from '../hooks/register'
 
 tier('user')
 
@@ -490,7 +490,13 @@ describe('user-supplied rates', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     const result = await $.command.run(run('cache-tax', ''))
-    expect(result.text).toMatch(/input 0\.43 · read 0\.03 · write 0 · output 0\.87 USD\/MTok \(user-supplied rates; prices, not costs\)/)
+    // The comparison is shown as costs for the context in hand, each against the
+    // uncached price, so no per-million rate appears in the card at all.
+    expect(result.text).toMatch(/cost        for 200\.5k tokens   no cache \$0\.09 = 100%/)
+    expect(result.text).toMatch(/from cache \$0\.0060 = 7% of that/)
+    expect(result.text).toMatch(/re-write \$0\.00 = 0% of that/)
+    expect(result.text).not.toMatch(/USD\/MTok/)
+    expect(result.text).not.toMatch(/unit prices/)
     // Fable's read rate is far below its input rate, so the cache is a saving
     // and the card must say so with a negative figure, not a positive one.
     // A saving renders in parentheses, so the card must not print a bare minus.
@@ -508,11 +514,15 @@ describe('user-supplied rates', () => {
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: 'claude-opus-5-5' }) }))
     const result = await $.command.run(run('cache-tax', ''))
-    expect(result.text).toMatch(/input 0\.0007 · read 0\.005 · write 0 · output 0\.6 USD\/MTok \(user-supplied rates; prices, not costs\)/)
+    expect(result.text).toMatch(/cost        for 200\.5k tokens   no cache \$0\.0001 = 100%/)
+    // A read rate seven times the input rate, which the share makes plain: the
+    // cache is not a saving here, and the figure says so without a rate table.
+    expect(result.text).toMatch(/from cache \$0\.0010 = 714% of that/)
     // At these figures a cache read costs more than the same context uncached,
     // so warming is a net loss — the card must not imply otherwise.
     expect(result.text).toMatch(/warming cannot pay for itself at these rates/)
     expect(result.text).not.toMatch(/0\.43/)
+    expect(result.text).not.toMatch(/USD\/MTok/)
   })
 
   test('/cache-tax on an unconfigured model shows no cost line', async ($, on) => {
@@ -522,7 +532,7 @@ describe('user-supplied rates', () => {
     // The turn's own usage carries the model, so it must be the unconfigured one.
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
     const result = await $.command.run(run('cache-tax', ''))
-    expect(result.text).toMatch(/unit prices none configured for this model/)
+    expect(result.text).toMatch(/cost        none configured for this model/)
     expect(result.text).not.toMatch(/cache effect/)
   })
 
@@ -987,6 +997,22 @@ describe('approved band and status split', () => {
     // Zero is a real answer, not an unknown, and it never takes parentheses.
     expect(fmtSignedUsd(0)).toBe('+$0.00')
     expect(fmtSignedUsd(null)).toBe('n/a')
+  })
+
+  test('a cost is shown as a share of the uncached price, and a small one is not rounded to nothing', () => {
+    expect(fmtShare(0.006, 0.086)).toBe(' = 7% of that')
+    expect(fmtShare(0.001, 0.00014)).toBe(' = 714% of that')
+    // Zero is zero, and says so rather than taking the below-one form.
+    expect(fmtShare(0, 0.09)).toBe(' = 0% of that')
+    // A share that is real but rounds away keeps its distinction from zero.
+    expect(fmtShare(0.0001, 0.09)).toBe(' = <1% of that')
+    expect(fmtShare(0.0008, 0.09)).toBe(' = <1% of that')
+    // Exactly one per cent is a whole per cent, not a below-one one.
+    expect(fmtShare(0.0009, 0.09)).toBe(' = 1% of that')
+    // Unknown at either end, and a baseline a share cannot be taken of.
+    expect(fmtShare(null, 0.09)).toBe('')
+    expect(fmtShare(0.006, null)).toBe('')
+    expect(fmtShare(0.006, 0)).toBe('')
   })
 
   test('no signed money reaches the band', async ($, on) => {

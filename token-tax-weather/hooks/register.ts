@@ -222,6 +222,19 @@ function cacheEffectUsd(s: State): number | null {
   return uncached == null || warm == null ? null : warm - uncached
 }
 
+/**
+ * A cost as a share of the uncached price — the baseline the other figures in
+ * the card are read against. A non-zero share that rounds away is `<1%` rather
+ * than `0%`, which is the difference between a figure that is nothing and one
+ * that is merely small. Empty when either end is unknown, or when the baseline
+ * is zero and a share would be a division by it.
+ */
+export function fmtShare(usd: number | null, base: number | null): string {
+  if (usd == null || base == null || base <= 0) return ''
+  const pct = (usd / base) * 100
+  return ` = ${pct <= 0 ? '0%' : pct < 1 ? '<1%' : `${Math.round(pct)}%`} of that`
+}
+
 /** Everything a fork bills: the cache read, any cache write, uncached input at its own rate, and the output. */
 function pingUsd(u: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }, r: Rates): number {
   return (u.cache_read_input_tokens * r.cacheRead + u.cache_creation_input_tokens * r.cacheWrite + u.input_tokens * r.input + u.output_tokens * r.output) / 1e6
@@ -710,12 +723,23 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
     lines.push(`usage       ${s.readSession.toLocaleString('en-US')} tokens served from cache over ${s.turns} turn${s.turns === 1 ? '' : 's'} since /clear`)
   }
   if (r) {
-    lines.push(`unit prices input ${r.input} · read ${r.cacheRead} · write ${r.cacheWrite} · output ${r.output} USD/MTok (${RATE_SOURCE}; prices, not costs)`)
-    lines.push(`for ${fmtTok(s.ctx)} tokens   re-write ${fmtUsd(coldUsd(s))} (write rate) · from cache ${fmtUsd(warmUsd(s))} (read rate) · no cache ${fmtUsd(uncachedUsd(s))} (input rate)`)
+    // The three figures for one read of the context in hand, each as a share of
+    // the uncached price. Providers publish rates per million tokens, but a
+    // person reads a bill for the context they actually have, so the comparison
+    // is shown as costs and the rates stay in /cache-tax-diagnostic, which is
+    // the command whose subject they are.
+    const uncached = uncachedUsd(s)
+    const warm = warmUsd(s)
+    const cold = coldUsd(s)
+    const head = `for ${fmtTok(s.ctx)} tokens`
+    const pad = ' '.repeat(13 + head.length + 3)
+    lines.push(`cost        ${head}   no cache ${fmtUsd(uncached)} = 100%`)
+    lines.push(`${pad}from cache ${fmtUsd(warm)}${fmtShare(warm, uncached)}`)
+    lines.push(`${pad}re-write ${fmtUsd(cold)}${fmtShare(cold, uncached)}`)
     const effect = cacheEffectUsd(s)
-    lines.push(`cache effect  ${fmtSignedUsd(effect)} for this context: "from cache" minus "no cache". A saving is parenthesised — the read rate is below the input rate, so being warm lowers the bill by that much. A surcharge takes a leading + — the read rate is above the input rate, so the cache costs more than it saves`)
+    lines.push(`cache effect  ${fmtSignedUsd(effect)} for this context at ${RATE_SOURCE}: "from cache" minus "no cache". A saving is parenthesised — the read rate is below the input rate, so being warm lowers the bill by that much. A surcharge takes a leading + — the read rate is above the input rate, so the cache costs more than it saves`)
   } else {
-    lines.push(`unit prices none configured for this model, so no cost can be shown (n/a)`)
+    lines.push(`cost        none configured for this model, so no cost can be shown (n/a)`)
   }
   // The line the shortened notices gave up. Said here, where there is room, and
   // only when it applies.
