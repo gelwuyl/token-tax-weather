@@ -109,6 +109,13 @@ export type State = {
   /** Cache-read tokens of the last completed main turn: what the cache actually served. */
   lastRead: number
   /**
+   * The last completed main turn's whole prompt, summed over its calls: the three
+   * input fields, which are disjoint slices of one prompt. `lastRead` against this
+   * is the turn's hit rate — how much of what was sent the cache carried — and it
+   * is a measurement, where the read rate against the input rate is only a price.
+   */
+  lastPrompt: number
+  /**
    * Cache-read tokens summed over every main turn since the last /clear: the
    * running total, where `lastRead` is only the turn just gone. A compaction does
    * not start a new conversation, so it survives `session.compact` the same way
@@ -288,6 +295,36 @@ function cacheEffectUsd(s: State): number | null {
 }
 
 /**
+ * The share of the last turn's prompt tokens the cache served — a measurement of
+ * what happened, where the read rate against the input rate is only a price.
+ *
+ * A share that is real but not quite whole reads `99%` rather than `100%`, because
+ * rounding a hit rate up to whole would claim the cache carried a prompt it did
+ * not. It is the mirror of the `<1%` the cost share already uses, and it is why
+ * the ceiling here is 99 and not the nearest integer.
+ */
+export function hitPct(read: number, prompt: number): string {
+  if (prompt <= 0) return ''
+  const pct = (read / prompt) * 100
+  return `${pct >= 100 ? 100 : Math.min(99, Math.round(pct))}%`
+}
+
+/**
+ * The share a cached read saves against the same context sent uncached.
+ *
+ * Unlike the hit rate this is a *rate*, not a measurement, and it is worth being
+ * plain about why: both prices are `context × rate / 1e6`, so the context appears
+ * on both sides of the division and cancels. What is left is the two rates, the
+ * same figure for every context size and every turn with a given model — only the
+ * money it is worth moves with the context. Null where no rates are configured,
+ * and zero or less when a read costs as much as uncached input or more.
+ */
+export function savedPct(warm: number | null, uncached: number | null): number | null {
+  if (warm == null || uncached == null || uncached <= 0) return null
+  return Math.round((1 - warm / uncached) * 100)
+}
+
+/**
  * A cost as a share of the uncached price, bare — the form the status line has
  * room for. A non-zero share that rounds away is `<1%` rather than `0%`, which
  * is the difference between a figure that is nothing and one that is merely
@@ -307,20 +344,39 @@ export function fmtShare(usd: number | null, base: number | null): string {
 }
 
 /**
- * The two costs the status line carries: what one read of this context costs
- * from cache, what the same context costs uncached, and the first as a share of
- * the second. Both figures are named by their order rather than by a sign, so
- * the slot cannot be read as a saving when it is a cost — `$0.0047 of $0.07` is
- * unambiguous where a bare signed figure was not. The share repeats the ratio in
- * the form that is read fastest. An unknown price is `n/a` and carries neither,
- * because there is no figure to take a share of.
+ * The status line's cost slot, in the two shares that read fastest: how much of
+ * the last turn's prompt the cache carried, and how much a carried token saves.
+ *
+ * It used to name the two prices, `$0.0047 of $0.07`, with the first as a share of
+ * the second. That share was the *cost* ratio, and it was the wrong figure to sit
+ * in a live row: both prices are `context × rate`, so the context cancels out of
+ * their ratio, and what remained was the model's two rates — always 7% for one
+ * model, always 14% for another, whatever the session was doing. A reading that
+ * cannot move is not a reading. Both replacements do move, and both read higher
+ * as cheaper, which the cost ratio did not.
+ *
+ * The prices themselves are not lost: `/cache-tax` prints all three, each against
+ * the uncached baseline, where there is room to say what a sign means.
  */
+export function costSlotText(hit: string, saved: number | null, effect: number | null): string {
+  // No rates for the model: nothing computable, so the unknown keeps its own form.
+  if (saved == null) return fmtSignedUsd(effect)
+  // A read that costs as much as uncached input, or more, is not a saving, and
+  // `0% saved` would have to mean both "no discount" and "a surcharge". The signed
+  // money carries that distinction instead, as it always has.
+  if (saved <= 0) return fmtSignedUsd(effect)
+  // The two read as one story — this much of the prompt was carried by the cache,
+  // and a carried token costs this much less — while staying distinguishable by
+  // their own words, since one is a measurement of the turn and the other a rate
+  // that no turn can change.
+  const parts: string[] = []
+  if (hit) parts.push(`${hit} from cache`)
+  parts.push(`${saved}% saved`)
+  return parts.join(', ')
+}
+
 function effectSlot(s: State): string {
-  const warm = warmUsd(s)
-  const uncached = uncachedUsd(s)
-  if (warm == null || uncached == null) return fmtSignedUsd(cacheEffectUsd(s))
-  const pct = fmtSharePct(warm, uncached)
-  return `${fmtUsd(warm)} of ${fmtUsd(uncached)}${pct ? `, ${pct}` : ''}`
+  return costSlotText(hitPct(s.lastRead, s.lastPrompt), savedPct(warmUsd(s), uncachedUsd(s)), cacheEffectUsd(s))
 }
 
 /** Everything a fork bills: the cache read, any cache write, uncached input at its own rate, and the output. */
@@ -364,6 +420,7 @@ export function resetForClear(s: State) {
   s.coldWritePending = false
   s.misses = []
   s.lastRead = 0
+  s.lastPrompt = 0
   s.readSession = 0
   s.turns = 0
   s.calls = 0
@@ -903,13 +960,17 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   const overCalls = s.calls > 0 ? ` over ${callCountText(s)}` : ''
   if (s.lastRead > 0) {
     const total = `${s.lastRead.toLocaleString('en-US')} tokens served from cache this turn${overCalls}`
+    // The share of the turn's own prompt, which the status line carries bare: here
+    // there is room to say what it is a share of.
+    const hit = hitPct(s.lastRead, s.lastPrompt)
+    const ofPrompt = hit ? ` — ${hit} of the turn's prompt` : ''
     // The multiple is worth naming only when the call count explains it: a read
     // many times the context takes many calls, and printing it beside a count of
     // one would be two figures on one line contradicting each other.
     const multiple = s.ctx > 0 && s.calls > 1 ? Math.round(s.lastRead / s.ctx) : 0
     lines.push(multiple >= 2
-      ? `cache       ${total}, ≈${multiple} × the ${fmtTok(s.ctx)} context — one read per model call`
-      : `cache       ${total}`)
+      ? `cache       ${total}${ofPrompt}, ≈${multiple} × the ${fmtTok(s.ctx)} context — one read per model call`
+      : `cache       ${total}${ofPrompt}`)
   } else if (s.lastRequestAt) {
     lines.push(`cache       none served from cache${overCalls} — the last turn reported nothing`)
   }
@@ -964,7 +1025,7 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
 export function freshState(): State {
   return {
     sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
-    guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0,
+    guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0, lastPrompt: 0,
     readSession: 0, turns: 0, calls: 0, steps: 0, owns: false,
     window: 0, percent: 0, windowSource: null, free: 0, compactAt: null,
     history: [], now: 0, surface: '', notice: null,
@@ -1302,6 +1363,10 @@ export const register: Register = on => {
       // which keeps only the last twelve readings and would undercount a long
       // session.
       s.lastRead = u.cache_read_input_tokens
+      // The turn's whole prompt: the three input fields are disjoint slices of one
+      // prompt, so their sum is what the cache was offered. Read against it, the
+      // served tokens are the turn's hit rate.
+      s.lastPrompt = u.input_tokens + u.cache_read_input_tokens + write
       s.readSession += u.cache_read_input_tokens
       s.turns += 1
       const full = prev > 20000 && write >= 0.5 * prev

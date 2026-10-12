@@ -3,7 +3,7 @@
 **A forecast band above the prompt, a state line beside the model picker.**
 
 - **The band** says what the context window is doing: how full it is, how much room is left, how far away `/autocompact` is, and how many tokens the cache served.
-- **The status line** says whether `/keepwarm` is armed, when it will ping, and what the cache-read rate is worth on the context in hand — or, where no surface draws the band, the window facts themselves.
+- **The status line** says whether `/keepwarm` is armed, when it will ping, and what the last turn got from the cache — or, where no surface draws the band, the window facts themselves.
 - **A notice** briefly replaces the status line when something needs attention.
 
 ## Install
@@ -135,20 +135,20 @@ cold write 200.5k · $4.01 · /keepwarm
 | 1 | **state** | `off` · `on` · `stopped: <reason>` | Always | `stopped` names why a window gave up **early**, which is what tells a failure from a window that simply ran out its hours — that one reads `off`, as an unarmed window does |
 | 2 | **window** | `ends <clock>` | A warming window is armed | When the window `/keepwarm` armed runs out — a budget this plugin chose, not a cache lifetime a provider promised |
 | 3 | **ping** | `ping at <clock>` · `(held <gap>)` · `(went at <gap>)` · `ping after first turn` · `ping after next turn` | A warming window is armed | The gap is what the last ping proved about the provider's TTL, and it moved the interval the next ping uses. The two `ping after` forms stand in for the time while there is no warm reading to count from |
-| 4 | **cost** | `$<from cache> of $<no cache>, <share>%` · `n/a` | A context exists | What one read of this context costs from cache, what the same context costs uncached, and the first as a share of the second |
+| 4 | **cost** | `<hit>% from cache, <saving>% saved` · `n/a` | A context exists | **Two shares, and they are different kinds of figure.** The hit rate measures the *last turn*: the share of its prompt tokens the cache carried. The saving is a *rate*, not a measurement — see [Reading the price comparison](#reading-the-price-comparison) for why it cannot move. Both read higher as cheaper. |
 | 5 | **arm hint** | `/keepwarm to arm the window` | No warming window is armed | The command that changes the state in slot 1 |
 | 6 | **card hint** | `/cache-tax for the full card` | Always | Everything this row has no width for |
 
 ```text
-off · $0.0020 of $0.03, 7% · /keepwarm to arm the window · /cache-tax for the full card
-on · ends 7:00pm · ping at 1:50pm · $0.0020 of $0.03, 7% · /cache-tax for the full card
-on · ends 7:00pm · ping at 2:40pm (held 50m) · $0.0020 of $0.03, 7% · /cache-tax for the full card
-on · ends 7:00pm · ping at 2:15pm (went at 50m) · $0.0020 of $0.03, 7% · /cache-tax for the full card
+off · 99% from cache, 93% saved · /keepwarm to arm the window · /cache-tax for the full card
+on · ends 7:00pm · ping at 1:50pm · 99% from cache, 93% saved · /cache-tax for the full card
+on · ends 7:00pm · ping at 2:40pm (held 50m) · 99% from cache, 93% saved · /cache-tax for the full card
+on · ends 7:00pm · ping at 2:15pm (went at 50m) · 99% from cache, 93% saved · /cache-tax for the full card
 on · ends 7:00pm · ping after first turn · /cache-tax for the full card
-stopped: ping not sent (nothing-to-fork) · $0.0020 of $0.03, 7% · /keepwarm to arm the window · /cache-tax for the full card
+stopped: ping not sent (nothing-to-fork) · 99% from cache, 93% saved · /keepwarm to arm the window · /cache-tax for the full card
 ```
 
-**The cost slot names both prices rather than a signed difference.** A bare signed figure on a clipped row was read as one of the costs it sits between, which is why `$0.0020 of $0.03` is spelled out. **The share repeats the ratio in the form that is read fastest**: it is the same for every context size with a given model, so it says how good the deal is, while the money says what the deal is worth on the context in hand. There is no share when there is no money to take one of, so `n/a` stands alone.
+**The cost slot carries two shares, and they answer different questions.** The **hit rate** is what the last turn's prompt was made of; the **saving** is what a carried token is worth against an uncarried one. Read together they say how much of the prompt the cache took and how much that was worth. Both arrive together: the slot needs a context to exist, and the turn that reports one is the turn that names the model the rates are looked up by, so there is no state that has one share and not the other. **A surcharge or a zero keeps its signed money** — `+$0.03`, `+$0.00` — because a percentage could not say it: `0% saved` would have to mean both "no discount" and "costs more", and `-14% saved` is a saving with a minus sign. **No rates at all is `n/a`**, and carries no share.
 
 ### The VS Code and mobile form, while no surface raises the band
 
@@ -167,9 +167,9 @@ stopped: ping not sent (nothing-to-fork) · $0.0020 of $0.03, 7% · /keepwarm to
 | 5 | **cost** | As the desktop and terminal form's | A context exists | |
 
 ```text
-off · ctx 199.1k · 1 call / 190.4k cache turn · $0.0060 of $0.09, 7%
-ends 7:00pm · ping at 1:50pm · ctx 199.1k · 1 call / 190.4k cache turn · $0.0060 of $0.09, 7%
-ends 7:00pm · ping after next turn · ctx 199.1k · 1 call / 0 cache turn · $0.0060 of $0.09, 7%
+off · ctx 199.1k · 1 call / 190.4k cache turn · 99% from cache, 93% saved
+ends 7:00pm · ping at 1:50pm · ctx 199.1k · 1 call / 190.4k cache turn · 99% from cache, 93% saved
+ends 7:00pm · ping after next turn · ctx 199.1k · 1 call / 0 cache turn · 0% from cache, 93% saved
 off · no context yet
 ```
 
@@ -257,9 +257,12 @@ cost        for 66.7k tokens   no cache $0.03 = 100%
 - **Zero is `+$0.00`**: the two input costs are equal. It is a real answer, and it never takes parentheses.
 - **`n/a`:** no rates are configured for the model.
 
-**The card carries the signed difference because it has room to say what a sign means; the status line does not**, so the line carries the two costs themselves — `$0.0020 of $0.03, 7%` — which no reader can mistake for a saving when they are a cost.
+**The card carries the signed difference because it has room to say what a sign means. The status line carries no money at all.** It used to — `$0.0020 of $0.03, 7%`, the two prices with the first as a share of the second — and that third figure was the reason to drop it. Both prices are `context × rate`, so **the context appears on both sides of their ratio and cancels**: what was left was the model's two rates and nothing else, always 7% for one model and always 14% for another, whatever the session was doing. A reading that cannot move is not a reading, so the line carries the two shares that do — `99% from cache, 93% saved`:
 
-**It is a hypothetical comparison for one read of the current context.** It is not the turn's bill, accumulated savings, or warming break-even. Its value does not tell you whether the cache is warm; it depends only on rates and context size. The card separately explains whether warming can pay for itself.
+- **`99% from cache` is a measurement.** It is the share of the last turn's prompt tokens the cache served, read against that turn's own prompt. It moves every turn. A share that is real but not whole reads `99%` rather than `100%`, so the figure never claims the cache carried a prompt it did not.
+- **`93% saved` is a rate, and deliberately so.** It is what a carried token costs against an uncarried one. It is the *same* figure at every context size, because the context cancels out of it — only the money it is worth moves. It is stated anyway, because a rate is worth knowing once even though it is not worth watching.
+
+**Neither is the turn's bill.** The hit rate measures what the cache did; the saving says what that is worth per token. Neither tells you whether the cache is *warm* right now — that depends on when the last request was. The card separately explains whether warming can pay for itself.
 
 **Providers publish rates per million tokens, and this plugin's are no exception — but a rate is not a bill**, so the card shows the bill for the context in hand. The rates themselves, and where each one came from, are the subject of `/cache-tax-diagnostic`.
 
