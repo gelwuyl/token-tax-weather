@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "token-tax-weather",
-      "description": "A coloured context forecast and cache-served token counts in the band; warming state and a signed price comparison on the status line. Includes /keepwarm, a warn-only guard, no automatic warming, and user-supplied rates.",
-      "version": "0.4.14",
+      "description": "A coloured context forecast and cache-served token counts in the band; warming state and the two costs on the status line. Includes /keepwarm, a warn-only guard, no automatic warming, and user-supplied rates.",
+      "version": "0.4.15",
       "category": "productivity",
       "source": "./token-tax-weather"
     }

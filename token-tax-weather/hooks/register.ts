@@ -182,6 +182,38 @@ export function fmtDuration(ms: number): string {
   return h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`
 }
 
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/**
+ * A clock time in the host's own zone — `7:00pm`, or `Tue 7:00pm` when the moment
+ * falls on a different day than `now` does.
+ *
+ * The status line is a value the app holds between paints, so anything in it that
+ * measures forward decays the moment it is set: `6h00m left`, read forty minutes
+ * later, is forty minutes wrong, and wrong in the direction that overstates what
+ * is left. An absolute time says the same thing at every reading. It is the one
+ * form that survives being held, which is why the row uses it and the `/cache-tax`
+ * card — a printout read as it is written — keeps its durations.
+ *
+ * Null when the host cannot format a clock, which leaves the caller its duration.
+ */
+export function fmtClock(ms: number, now: number): string | null {
+  try {
+    const at = new Date(ms)
+    const h = at.getHours()
+    const m = at.getMinutes()
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return null
+    const clock = `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`
+    const from = new Date(now)
+    const sameDay = at.getFullYear() === from.getFullYear()
+      && at.getMonth() === from.getMonth()
+      && at.getDate() === from.getDate()
+    return sameDay ? clock : `${DAYS[at.getDay()]} ${clock}`
+  } catch {
+    return null
+  }
+}
+
 function fmtUsd(usd: number | null): string {
   if (usd == null) return 'n/a'
   // Sub-cent figures are normal at these rates; two decimals would read as $0.00.
@@ -346,11 +378,22 @@ export function seedFromResume(s: State, e: ResumeFields, now: number): string |
     : `cold resume · first message ≈${usd}`
 }
 
-/** The warming slot on its own: off, a countdown, or why it stopped. */
+/** The card's warming slot: off, a countdown, or why it stopped. */
 function warmingText(s: State, now: number): string {
   if (s.stopped) return `stopped: ${s.stopped}`
   if (!s.deadline) return 'off'
   return `${fmtDuration(s.deadline - now)} left`
+}
+
+/**
+ * The same slot as the row writes it: when the armed window ends, as a clock
+ * time. Falls back to the countdown where the host cannot format one, and to
+ * nothing at all while no window is armed.
+ */
+function endsText(s: State, now: number): string | null {
+  if (!s.deadline) return null
+  const clock = fmtClock(s.deadline, now)
+  return clock ? `ends ${clock}` : `${fmtDuration(s.deadline - now)} left`
 }
 
 /**
@@ -386,15 +429,17 @@ function nextPingText(s: State, now: number): string | null {
   if (!s.deadline) return null
   if (!s.lastRequestAt) return 'ping after first turn'
   if (isCold(s, now)) return 'ping after next turn'
-  return `ping in ${fmtDuration(s.lastRequestAt + s.every - now)}${heldText(s)}`
+  const at = s.lastRequestAt + s.every
+  const clock = fmtClock(at, now)
+  return `${clock ? `ping at ${clock}` : `ping in ${fmtDuration(at - now)}`}${heldText(s)}`
 }
 
 // The under-composer line, in one fixed field order so the same fact always
-// appears in the same place — durations first, then token counts, then money:
+// appears in the same place — times first, then token counts, then money:
 //
 //   <warming> · [ping] · <context> · [cache] · [±]
 //
-// warming  off | <time> left | stopped: <why>
+// warming  off | ends <clock> | stopped: <why>
 // ping     present only while a window is armed
 // context  no context yet | ctx <tokens> — what the cache could be holding
 // cache    absent until a turn reports a cache read: how much it read this turn
@@ -412,7 +457,7 @@ function nextPingText(s: State, now: number): string | null {
 // the last turn's own usage and never from a session lookup — at session start
 // the host may not yet have chosen one, and a footer must not be left waiting.
 function statusText(s: State, now: number): string {
-  const parts = [warmingText(s, now)]
+  const parts = [s.stopped ? `stopped: ${s.stopped}` : (endsText(s, now) ?? 'off')]
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
   parts.push(s.ctx > 0 ? `ctx ${fmtTok(s.ctx)}` : 'no context yet')
@@ -435,7 +480,8 @@ function hintsFor(s: State): string[] {
 // line as a hint anyway.
 function hintText(s: State, now: number): string {
   const parts = [s.stopped ? `stopped: ${s.stopped}` : s.deadline ? 'on' : 'off']
-  if (s.deadline) parts.push(`${fmtDuration(s.deadline - now)} left`)
+  const ends = endsText(s, now)
+  if (ends) parts.push(ends)
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
   if (s.ctx > 0) parts.push(effectSlot(s))

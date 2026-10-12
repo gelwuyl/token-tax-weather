@@ -5,13 +5,17 @@ import type {
   ContextWindowSource, SessionContextUsage, SessionStartInput, Settings, SettingsSource, TurnCompleteInput, TurnUsage,
 } from 'claude-code'
 
-import { RATES, fmtShare, fmtSignedUsd, ratesFor } from '../hooks/register'
+import { RATES, fmtClock, fmtShare, fmtSignedUsd, ratesFor } from '../hooks/register'
 
 tier('user')
 
 const MIN = 60 * 1000
 const HOUR = 60 * MIN
-const START = 1_000_000
+// The clock starts at a named local wall-clock — 1:00pm on 12 October 2026 — so
+// the row's clock times, which the tests assert exactly, are the same in every
+// zone: both the fixture's start and the mod's formatter read the host's local
+// time, and a bare epoch would put a different clock in each.
+const START = new Date(2026, 9, 12, 13, 0, 0).getTime()
 const MODEL = 'claude-fable-5'
 // A model with no RATES row: the explicit unknown-cost path.
 const UNCONFIGURED = 'claude-no-such-model'
@@ -299,13 +303,13 @@ describe('warming', () => {
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
   })
 
-  test('an armed window shows the countdown, the context and the next ping', async ($, on) => {
+  test('an armed window names when it ends and when the next ping comes, not how long either waits', async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on, {})
     await $.session.start(session)
     await $.turn.complete(turn())
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
   })
 
   test('an armed window says so when it has no rates for the model', async ($, on) => {
@@ -314,19 +318,19 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · n/a')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · cache 200k this turn · n/a')
   })
 
   test('the fields keep their order whatever the state', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const w = world(on, {})
     await $.session.start(session)
-    // durations first, then tokens, then money — the same order in every state.
+    // times first, then tokens, then money — the same order in every state.
     expect(w.status.at(-1)).toBe('off · no context yet')
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('6h00m left · ping in 50m · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
     await clock.advance(60 * MIN)
     await $.command.run(run('keepwarm', 'off'))
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
@@ -489,7 +493,7 @@ describe('pinging', () => {
     // The ceiling is now 50m and the floor is still nothing, so the midpoint is
     // half of it — and the window is still armed, because the rewrite the ping
     // just paid for has already been paid.
-    expect(w.status.at(-1)).toBe('5h10m left · ping in 25m (went at 50m) · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 2:15pm (went at 50m) · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
     const card = await $.command.run(run('cache-tax', ''))
     expect(card.text).toMatch(/last ping   read 0 from cache, wrote 102\.8k, \$0\.0000 \(the cache was gone after 50m idle, so the provider's TTL is under that\)/)
   })
@@ -507,14 +511,14 @@ describe('pinging', () => {
     await $.command.run(run('keepwarm', '6h'))
     await clock.advance(50 * MIN + 1)
     await flush()
-    expect(w.status.at(-1)).toContain('ping in 25m (went at 50m)')
+    expect(w.status.at(-1)).toContain('ping at 2:15pm (went at 50m)')
     // Warm at 25m: the floor moves to 25m while the ceiling stays at 50m, so the
     // next probe is the midpoint of the two, not a second halving to 12m.
     await clock.advance(25 * MIN + 1)
     await flush()
     expect(w.forks).toEqual([WARM_PROMPT, WARM_PROMPT])
-    // The midpoint of 25m and 50m is 37.5m, which the row rounds to the minute.
-    expect(w.status.at(-1)).toContain('ping in 38m (held 25m)')
+    // The midpoint of 25m and 50m is 37.5m from the ping that just ran at 2:15pm.
+    expect(w.status.at(-1)).toContain('ping at 2:52pm (held 25m)')
   })
 
   test('a provider that caches nothing stops the window rather than pinging on', async ($, on) => {
@@ -548,11 +552,11 @@ describe('pinging', () => {
     await $.turn.complete(turn())
     await $.command.run(run('keepwarm', '6h'))
     // Before any ping has run there is nothing proved, so the slot is only a time.
-    expect(w.status.at(-1)).toContain('ping in 50m ·')
+    expect(w.status.at(-1)).toContain('ping at 1:50pm ·')
     expect(w.status.at(-1)).not.toContain('held')
     await clock.advance(50 * MIN + 1)
     await flush()
-    expect(w.status.at(-1)).toContain('ping in 50m (held 50m)')
+    expect(w.status.at(-1)).toContain('ping at 2:40pm (held 50m)')
   })
 
   test('an unanswered fork stops the window with a reason', async ($, on) => {
@@ -564,6 +568,70 @@ describe('pinging', () => {
     await clock.advance(50 * MIN + 1)
     await flush()
     expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+  })
+})
+
+// The status line is a value the app holds until something sets it again, so
+// anything in it that measures forward decays as it is held: `6h00m left`, read
+// forty minutes after it was written, overstates what is left by forty minutes,
+// and nothing on the row corrects it. The row therefore names the moments
+// themselves, which say the same thing at every reading.
+describe('the clock the row names', () => {
+  test('fmtClock reads the host zone on the twelve-hour clock', () => {
+    // Both the instant and its formatting are built from local components, so the
+    // expectation holds in any zone rather than only where the author sat.
+    const now = new Date(2026, 9, 12, 13, 0, 0).getTime()
+    expect(fmtClock(new Date(2026, 9, 12, 19, 0, 0).getTime(), now)).toBe('7:00pm')
+    expect(fmtClock(new Date(2026, 9, 12, 13, 5, 0).getTime(), now)).toBe('1:05pm')
+    // Midnight and noon are the two hours a bare `h % 12` would print as `0`.
+    expect(fmtClock(new Date(2026, 9, 12, 0, 30, 0).getTime(), now)).toBe('12:30am')
+    expect(fmtClock(new Date(2026, 9, 12, 12, 0, 0).getTime(), now)).toBe('12:00pm')
+  })
+
+  test('a moment on another day carries its weekday, so the row cannot be read as today', () => {
+    // 12 October 2026 is a Monday; 13 October is the Tuesday after it.
+    expect(fmtClock(new Date(2026, 9, 13, 1, 0, 0).getTime(), new Date(2026, 9, 12, 13, 0, 0).getTime())).toBe('Tue 1:00am')
+  })
+
+  test('a held row is not rewritten as time passes, and does not need to be', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, {})
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    const painted = w.status.at(-1)
+    // Ten minutes of idle with the ping still forty minutes out: nothing repaints.
+    await clock.advance(10 * MIN)
+    await flush()
+    expect(w.status.at(-1)).toBe(painted)
+    // And the figures held across that gap are still the true ones — the whole
+    // reason the row names a moment rather than a wait.
+    expect(painted).toContain('ends 7:00pm · ping at 1:50pm')
+  })
+
+  test('a turn moves the ping with it, and leaves the window where it was', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, {})
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    expect(w.status.at(-1)).toContain('ping at 1:50pm')
+    // A turn at 1:20pm re-arms the ping from itself, fifty minutes on.
+    await clock.advance(20 * MIN)
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toContain('ping at 2:10pm')
+    // The window's own end does not move: a turn does not extend the budget.
+    expect(w.status.at(-1)).toContain('ends 7:00pm')
+  })
+
+  test('a window that ends on another day says which day', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, {})
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    // Armed at 1:00pm for twelve hours, so it ends at 1:00am the next morning.
+    await $.command.run(run('keepwarm', '12h'))
+    expect(w.status.at(-1)).toContain('ends Tue 1:00am')
   })
 })
 
@@ -931,7 +999,7 @@ describe('the line the band frees', () => {
     await $.command.run(run('keepwarm', '6h'))
     // Armed and warm: a ping is already coming, so there is nothing to suggest
     // and the line does not invent one.
-    expect(w.status.at(-1)).toBe('on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('on · ends 7:00pm · ping at 1:50pm · $0.0060 of $0.09, 7% · /cache-tax for the full card')
   })
 
   test('a window that stopped says why, and offers to start another', async ($, on) => {
@@ -1033,10 +1101,10 @@ describe('approved band and status split', () => {
     // 2. Status unarmed: off · signed effect · /keepwarm to arm the window · /cache-tax for the full card
     expect(w.status.at(-1)).toBe('off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card')
 
-    // 3. Status armed: on · <duration> left · [ping] · signed effect · /cache-tax for the full card
+    // 3. Status armed: on · ends <clock> · [ping] · signed effect · /cache-tax for the full card
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('on · 6h00m left · ping in 50m · $0.0060 of $0.09, 7% · /cache-tax for the full card')
-    // Separate state and countdown with middot not comma
+    expect(w.status.at(-1)).toBe('on · ends 7:00pm · ping at 1:50pm · $0.0060 of $0.09, 7% · /cache-tax for the full card')
+    // Separate state and time with middot not comma
     expect(w.status.at(-1)).not.toContain('keepwarm on,')
   })
 
@@ -1107,7 +1175,7 @@ describe('approved band and status split', () => {
     expect(w.status.at(-1)).toBe('off · n/a · /keepwarm to arm the window · /cache-tax for the full card')
 
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('on · 6h00m left · ping in 50m · n/a · /cache-tax for the full card')
+    expect(w.status.at(-1)).toBe('on · ends 7:00pm · ping at 1:50pm · n/a · /cache-tax for the full card')
   })
 
   // A zero effect cannot be reached through the engine fixtures: it needs a model
