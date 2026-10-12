@@ -117,6 +117,19 @@ export type State = {
   readSession: number
   /** Completed main turns since the last /clear: what `readSession` was summed over. */
   turns: number
+  /**
+   * Model calls the last completed main turn made, from the engine's own step
+   * index. A turn makes one model call per step, and the engine numbers a turn's
+   * steps from 0, so the highest index seen is one less than the count.
+   *
+   * This is the fact that makes `lastRead` legible: a turn's usage is its calls
+   * summed, so a long agentic turn reads the context once per call and the total
+   * runs to many times the context. `150.9k cache turn` beside a 157.9k context
+   * reads as a miscount until the call count that produced it is on the row too.
+   */
+  calls: number
+  /** Steps seen in the turn now running; moved into `calls` when that turn completes. */
+  steps: number
   /** True once this mod's command names are the session's, so the footer slot is ours to write. */
   owns: boolean
   /** The window the fill is measured against: the compaction window /autocompact sets, else the model's. */
@@ -353,6 +366,8 @@ export function resetForClear(s: State) {
   s.lastRead = 0
   s.readSession = 0
   s.turns = 0
+  s.calls = 0
+  s.steps = 0
   s.percent = 0
   s.free = 0
   s.compactAt = null
@@ -461,7 +476,10 @@ function statusText(s: State, now: number): string {
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
   parts.push(s.ctx > 0 ? `ctx ${fmtTok(s.ctx)}` : 'no context yet')
-  if (s.lastRead > 0) parts.push(`cache ${fmtTok(s.lastRead)} this turn`)
+  // The same reading the band carries, in the band's own words: a row that showed
+  // the cache figure without the call count that produced it would be showing the
+  // one number this slot exists to explain.
+  if (s.calls > 0) parts.push(`${callCountText(s)} · ${fmtTok(s.lastRead)} cache turn`)
   if (s.ctx > 0) parts.push(effectSlot(s))
   return parts.join(' · ')
 }
@@ -539,6 +557,16 @@ function sparkline(history: number[], window: number): string {
  * "since the reading before it", so the words are left out: the band is a row of
  * figures, and every other slot names its own unit rather than its tense.
  */
+/**
+ * The model calls the last turn made, in the band's own words. This is the
+ * denominator the cache figure beside it has always lacked: `150.9k cache turn`
+ * against a 157.9k context looks like a miscount until the ~42 calls that read
+ * that context are on the row with it.
+ */
+function callCountText(s: State): string {
+  return `${s.calls} call${s.calls === 1 ? '' : 's'}`
+}
+
 function trendText(history: number[]): string | null {
   if (history.length < 2) return null
   const delta = history[history.length - 1]! - history[history.length - 2]!
@@ -632,7 +660,7 @@ function band(
   if (spark) parts.push(dim('  ·  '), t({ color: f.color }, spark))
   const trend = columns >= 72 ? trendText(s.history) : null
   if (trend) parts.push(dim(`  ·  ${trend}`))
-  if (s.lastRead > 0) parts.push(dim(`  ·  ${fmtTok(s.lastRead)} cache turn`))
+  if (s.calls > 0) parts.push(dim(`  ·  ${callCountText(s)}  ·  ${fmtTok(s.lastRead)} cache turn`))
   // The running total, beside the turn it continues: a turn's read is the figure
   // that moves, the session's is the one that adds up to what the cache has
   // served you since /clear.
@@ -860,16 +888,18 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   // What the cache read this turn, not a size it holds: a turn's usage is its
   // model calls summed, so a long agentic turn reads the context once per call
   // and the total can run to many times the context it was reading.
+  const overCalls = s.calls > 0 ? ` over ${callCountText(s)}` : ''
   if (s.lastRead > 0) {
-    const total = `${s.lastRead.toLocaleString('en-US')} tokens served from cache this turn`
-    if (s.ctx > 0 && s.lastRead >= 2 * s.ctx) {
-      const multiple = Math.round(s.lastRead / s.ctx)
-      lines.push(`cache       ${total}, ≈${multiple} × the ${fmtTok(s.ctx)} context — one read per model call`)
-    } else {
-      lines.push(`cache       ${total}`)
-    }
+    const total = `${s.lastRead.toLocaleString('en-US')} tokens served from cache this turn${overCalls}`
+    // The multiple is worth naming only when the call count explains it: a read
+    // many times the context takes many calls, and printing it beside a count of
+    // one would be two figures on one line contradicting each other.
+    const multiple = s.ctx > 0 && s.calls > 1 ? Math.round(s.lastRead / s.ctx) : 0
+    lines.push(multiple >= 2
+      ? `cache       ${total}, ≈${multiple} × the ${fmtTok(s.ctx)} context — one read per model call`
+      : `cache       ${total}`)
   } else if (s.lastRequestAt) {
-    lines.push('cache       none reported by the last turn, so nothing was served from cache')
+    lines.push(`cache       none served from cache${overCalls} — the last turn reported nothing`)
   }
   // The running total and what it was summed over, so the figure on the band is
   // one command away from being checkable rather than taken on trust.
@@ -923,7 +953,7 @@ export function freshState(): State {
   return {
     sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
     guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0,
-    readSession: 0, turns: 0, owns: false,
+    readSession: 0, turns: 0, calls: 0, steps: 0, owns: false,
     window: 0, percent: 0, windowSource: null, free: 0, compactAt: null,
     history: [], now: 0, surface: '', notice: null,
   }
@@ -1217,7 +1247,12 @@ export const register: Register = on => {
   })
 
   on('turn.step', async function* ($, e, next) {
-    if (!e.agentId) s.lastRequestAt = await $.clock.now()
+    if (!e.agentId) {
+      s.lastRequestAt = await $.clock.now()
+      // The engine numbers a turn's steps from 0, so the highest index seen is one
+      // less than the calls the turn has made.
+      s.steps = Math.max(s.steps, e.index + 1)
+    }
     yield* next(e)
   })
 
@@ -1230,6 +1265,11 @@ export const register: Register = on => {
     // turn.step stamps the exact request time; when no step of this turn did, the turn's end is the floor.
     if (now - s.lastRequestAt > e.durationMs) s.lastRequestAt = now
     s.compacted = false
+    // The turn's call count, read before the next turn's steps start arriving. A
+    // turn that reported no step still made at least one call, so the floor is one
+    // rather than zero — a zero here would read as a turn that cost nothing.
+    s.calls = Math.max(1, s.steps)
+    s.steps = 0
     const u = e.usage
     // The notice this turn raises, if any. It is set after the clear below, so a
     // cold write — a call to action — outlives its own turn by one, unlike the

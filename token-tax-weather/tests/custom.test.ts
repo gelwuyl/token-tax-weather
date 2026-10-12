@@ -25,7 +25,7 @@ const DEADLINE_KEY = 'token-tax-weather:deadline:S1'
 // The idle footer: what the costing is based on while nothing is armed. Before
 // the first turn the engine has told this mod no model, and the line says so.
 const NO_MODEL_FOOTER = 'off · no context yet'
-const IDLE_FOOTER = 'off · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%'
+const IDLE_FOOTER = 'off · ctx 200.5k · 1 call · 200k cache turn · $0.0060 of $0.09, 7%'
 // The line where the band is raised: the band carries the readout, so this slot
 // carries the warming state, signed money, and hints.
 const HINT_FOOTER = 'off · $0.0060 of $0.09, 7% · /keepwarm to arm the window · /cache-tax for the full card'
@@ -56,6 +56,16 @@ const prompt = (text: string): PromptSubmitInput => ({ text, wait: false, origin
 
 // A fired timer starts an async ping; drain microtasks so it settles before asserting.
 const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve() }
+
+// The model calls a turn makes, driven the way the engine's own loop drives them:
+// one `turn.step` per call, its `index` the position in the turn from 0. The mod
+// counts these, so a test that wants a multi-call turn has to make one — a turn
+// that reports no step still made one call, which is the floor the mod applies.
+const callStep = async ($: Engine, index: number) => {
+  for await (const _ of $.turn.step({ turnId: 't1', index, model: MODEL, messageCount: 1 })) {
+    // The step's chunks are the model's reply arriving; nothing here reads them.
+  }
+}
 
 // 'unanswered' is this build's `nothing-to-fork` arm: the union has no null arm.
 type ForkAnswer = 'unanswered' | { read: number; write: number; out?: number; input?: number }
@@ -144,6 +154,12 @@ function world(on: On, opts: {
   on('command.register', ($, e) => { commands.push(e); return { value: { command: e.name } } })
   on('command.list', () => ({ value: (opts.commands ?? []).map(name => ({ name, description: '', source: 'plugin' as const })) }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
+  // `turn.step` streams, so the bottom of its chain is a generator returning the
+  // step's result. The mod counts the steps and reads nothing else here, so this
+  // answers with an empty response of the shape the engine declares.
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  })
   on('prompt.submit', ($, e) => { entered.push(e.text); return { text: e.text } })
   on('session.compact', ($, e) => ({ messages: e.messages }))
   on('classic.SessionStart', () => ({}))
@@ -279,7 +295,7 @@ describe('warming', () => {
     const w = world(on, { model: UNCONFIGURED })
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
-    expect(w.status.at(-1)).toBe('off · ctx 200.5k · cache 200k this turn · n/a')
+    expect(w.status.at(-1)).toBe('off · ctx 200.5k · 1 call · 200k cache turn · n/a')
   })
 
   test('a configured model carries no unpriced flag', async ($, on) => {
@@ -309,7 +325,7 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · 1 call · 200k cache turn · $0.0060 of $0.09, 7%')
   })
 
   test('an armed window says so when it has no rates for the model', async ($, on) => {
@@ -318,7 +334,7 @@ describe('warming', () => {
     await $.session.start(session)
     await $.turn.complete(turn({ usage: usage({ model: UNCONFIGURED }) }))
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · cache 200k this turn · n/a')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · 1 call · 200k cache turn · n/a')
   })
 
   test('the fields keep their order whatever the state', async ($, on) => {
@@ -330,7 +346,7 @@ describe('warming', () => {
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
     await $.command.run(run('keepwarm', '6h'))
-    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 1:50pm · ctx 200.5k · 1 call · 200k cache turn · $0.0060 of $0.09, 7%')
     await clock.advance(60 * MIN)
     await $.command.run(run('keepwarm', 'off'))
     expect(w.status.at(-1)).toBe(IDLE_FOOTER)
@@ -343,7 +359,7 @@ describe('warming', () => {
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 141912 }) }))
     // Whole-thousands rounding would print both of these as 300k and 142k and
     // make the cache read look like half the context by coincidence of rounding.
-    expect(w.status.at(-1)).toBe('off · ctx 299.9k · cache 141.9k this turn · $0.0090 of $0.13, 7%')
+    expect(w.status.at(-1)).toBe('off · ctx 299.9k · 1 call · 141.9k cache turn · $0.0090 of $0.13, 7%')
   })
 
   test("the Original Mod's settings keys arm nothing", async ($, on) => {
@@ -493,7 +509,7 @@ describe('pinging', () => {
     // The ceiling is now 50m and the floor is still nothing, so the midpoint is
     // half of it — and the window is still armed, because the rewrite the ping
     // just paid for has already been paid.
-    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 2:15pm (went at 50m) · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+    expect(w.status.at(-1)).toBe('ends 7:00pm · ping at 2:15pm (went at 50m) · ctx 200.5k · 1 call · 200k cache turn · $0.0060 of $0.09, 7%')
     const card = await $.command.run(run('cache-tax', ''))
     expect(card.text).toMatch(/last ping   read 0 from cache, wrote 102\.8k, \$0\.0000 \(the cache was gone after 50m idle, so the provider's TTL is under that\)/)
   })
@@ -567,7 +583,7 @@ describe('pinging', () => {
     await $.command.run(run('keepwarm', '6h'))
     await clock.advance(50 * MIN + 1)
     await flush()
-    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · cache 200k this turn · $0.0060 of $0.09, 7%')
+    expect(w.status.at(-1)).toBe('stopped: ping not sent (nothing-to-fork) · ctx 200.5k · 1 call · 200k cache turn · $0.0060 of $0.09, 7%')
   })
 })
 
@@ -858,29 +874,42 @@ describe('the live surface roster decides the status line', () => {
 })
 
 // A turn's usage is its model calls summed, so the cache read is a quantity read
-// this turn, never a size the cache holds. Both the readout and the card must
-// say so.
+// this turn, never a size the cache holds — and the call count is the fact that
+// makes a figure larger than the context legible rather than a miscount.
 describe('the cache read is a per-turn quantity, not a size held', () => {
-  test("the readout labels the read as this turn's, never as a cache size", async ($, on) => {
+  test("the readout names the calls the read came over, never a cache size", async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on, { live: { tokens: 200000 } })
     await $.session.start(session)
     await $.turn.complete(turn())
-    expect(w.status.at(-1)).toMatch(/· cache 200k this turn ·/)
+    expect(w.status.at(-1)).toMatch(/· 1 call · 200k cache turn ·/)
     expect(w.status.join('\n')).not.toMatch(/cached/)
   })
 
-  test('the card derives the honest multiple from a long agentic turn', async ($, on) => {
+  test('a long agentic turn reports the calls it made, so its read reads as a total', async ($, on) => {
     mock.clock(on, { now: START })
-    // ~14 model calls over a 155.2k context: the summed read of 2.2M is impossible
-    // to hold, so the card reports it as the turn's total, not a held size.
-    world(on, { live: { tokens: 155200 } })
-    await $.session.start(session)
+    const w = world(on, { live: { tokens: 155200 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    // Fourteen model calls, each re-reading the same 155.2k context from cache.
+    for (let i = 0; i < 14; i++) await callStep($, i)
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 2200000 }) }))
+    const band = await bandOf($)
+    // The count is what stops `2.2M` reading as a miscount beside a 155.2k context.
+    expect(band?.text).toContain('14 calls  ·  2.2M cache turn')
     const text = (await $.command.run(run('cache-tax', ''))).text
-    expect(text).toMatch(/cache       2,200,000 tokens served from cache this turn, ≈14 × the 155\.2k context/)
+    expect(text).toMatch(/cache       2,200,000 tokens served from cache this turn over 14 calls, ≈14 × the 155\.2k context/)
     // The old line claimed a share of context and capped it at 100%; that claim is gone.
     expect(text).not.toMatch(/% of context/)
+  })
+
+  test('a turn that reported no step is still one call, never zero', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, { live: { tokens: 200000 } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toContain('1 call · ')
+    // The floor is one: a zero here would read as a turn that cost nothing.
+    expect(w.status.at(-1)).not.toContain('0 calls')
   })
 
   test('a single-call turn says the read plainly, with no noisy ≈1 ×', async ($, on) => {
@@ -889,8 +918,10 @@ describe('the cache read is a per-turn quantity, not a size held', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     const text = (await $.command.run(run('cache-tax', ''))).text
-    expect(text).toMatch(/cache       200,000 tokens served from cache this turn/)
+    expect(text).toMatch(/cache       200,000 tokens served from cache this turn over 1 call\n/)
+    // A multiple is only named when the call count explains it; one call cannot.
     expect(text).not.toMatch(/≈1 ×/)
+    expect(text).not.toMatch(/≈/)
   })
 })
 
@@ -1027,7 +1058,7 @@ describe('the line the band frees', () => {
   })
 })
 
-// `cache <n> this turn` is the turn just gone; the session total is what the cache
+// The cache-turn slot is the turn just gone; the session total is what the cache
 // has served since /clear. Both are shown, because they answer different
 // questions: what this turn cost, and what the cache has been worth overall.
 describe('the session read total', () => {
@@ -1058,7 +1089,7 @@ describe('the session read total', () => {
     await $.turn.complete(turn())
     await $.turn.complete(turn())
     const band = await bandOf($)
-    expect(band?.text).toContain('200k cache turn')
+    expect(band?.text).toContain('1 call  ·  200k cache turn')
     expect(band?.text).toContain('400k usage session')
   })
 
@@ -1090,11 +1121,11 @@ describe('approved band and status split', () => {
     await $.session.start(bandSession)
     await $.turn.complete(turn())
     await $.turn.complete(turn())
-    // 1. Band: forecast · <ctx tokens> of <window tokens> (<pct>%) · sparkline · trend · cache <n> this turn · usage <n> this session
+    // 1. Band: forecast · <ctx tokens> of <window tokens> (<pct>%) · sparkline · trend · <n> calls · <n> cache turn · <n> usage session
     const band = await bandOf($, { columns: 120 })
     // The fixture's threshold stands in for the engine's: `rawMax` less 20000, so
     // 362k less 20k against a 200k context leaves 142k to go.
-    expect(band?.text).toBe('☂  Showers  200k / 362k (55%)  ·  142k to go (39.2%)  ·  ▄▄  ·  steady  ·  200k cache turn  ·  400k usage session')
+    expect(band?.text).toBe('☂  Showers  200k / 362k (55%)  ·  142k to go (39.2%)  ·  ▄▄  ·  steady  ·  1 call  ·  200k cache turn  ·  400k usage session')
     // No warming state, ping, money, or hints in band
     expect(band?.text).not.toMatch(/keepwarm|ping|left|\$|\/keepwarm|\/cache-tax/)
 
@@ -1232,21 +1263,21 @@ describe('approved band and status split', () => {
     expect(w.status.at(-1)).toBe(NO_CONTEXT_HINT_FOOTER)
   })
 
-  test('labels disappear appropriately at zero for turn cache and session usage', async ($, on) => {
+  test('a turn that served nothing reports the zero rather than going silent', async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
     await $.session.start(bandSession)
-    // Turn completes with zero cache read tokens
+    // A cold turn: the calls happened, and none of them found a cache.
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 0 }) }))
     const band = await bandOf($)
-    // Zero turn cache tokens: no cache label
-    expect(band?.text).not.toContain('cache')
-    expect(band?.text).not.toContain('this turn')
-    // Zero session cache tokens: no usage label
+    // The zero is a reading, not an absence: the turn made calls and the cache
+    // served none of them, which is exactly the thing worth knowing.
+    expect(band?.text).toContain('1 call')
+    expect(band?.text).toContain('0 cache turn')
+    // The session total has nothing to add to that, so it stays out.
     expect(band?.text).not.toContain('usage')
-    expect(band?.text).not.toContain('this session')
 
     const card = await $.command.run(run('cache-tax', ''))
-    expect(card.text).toMatch(/cache       none reported by the last turn, so nothing was served from cache/)
+    expect(card.text).toMatch(/cache       none served from cache over 1 call — the last turn reported nothing/)
   })
 })

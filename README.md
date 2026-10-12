@@ -44,7 +44,7 @@ claude plugin install token-tax-weather@token-tax-weather
 ## The band
 
 ```text
-<forecast>  <context> / <window> (<percent>%) · [<to go> to go (<to-go%>)] · [sparkline] · [trend] · [<tokens> cache turn] · [<tokens> usage session]
+<forecast>  <context> / <window> (<percent>%) · [<to go> to go (<to-go%>)] · [sparkline] · [trend] · [<n> calls · <tokens> cache turn] · [<tokens> usage session]
 ```
 
 **Slots with no data are omitted, never left blank; the separator is `·`.** Token counts use `k` or `M`, to one decimal, trailing `.0` dropped.
@@ -56,22 +56,25 @@ claude plugin install token-tax-weather@token-tax-weather
 | **to go** | `<tokens> to go (<to-go%>)` · `compact due` | A context exists, and the engine reports an autocompact threshold | The distance to where `/autocompact` fires. Absent with nothing in use, where it would only restate the threshold; `compact due` once past it |
 | **sparkline** | up to twelve bars from `▁▂▃▄▅▆▇█` | A completed reading exists, and 56+ columns | One bar per reading, its height that reading's share of the window |
 | **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings, and 72+ columns | The move since the previous reading. The arrow carries the direction, so the words do not |
-| **cache** | `<tokens> cache turn` | The last turn served something from cache | Cache-served tokens only, summed over that turn's model calls |
+| **calls** | `<n> calls` | A turn has completed | The model calls that turn made, taken from the engine's own step index — the count, not an estimate. It is what makes the figure beside it legible |
+| **cache** | `<tokens> cache turn` | A turn has completed | Cache-served tokens only, summed over that turn's calls. `0` when the turn found no cache — a reading, not an absence |
 | **usage** | `<tokens> usage session` | Anything has been served since `/clear` | The same quantity over every turn since `/clear`; a compaction does not reset it |
 
 **Widest to narrowest:**
 
 ```text
-↯  Compact soon  326.5k / 362k (90%)  ·  compact due  ·  ▅▅▆▆▇▇  ·  ▲ +12k  ·  150.9k cache turn  ·  41.6M usage session
-☇  Storm  299.9k / 362k (83%)  ·  20.1k to go (5.6%)  ·  ▃▄▅▅▆▇  ·  ▲ +12k  ·  150.9k cache turn  ·  41.6M usage session
-☁  Cloudy  164.1k / 362k (46%)  ·  155.9k to go (43.1%)  ·  ▁▂▃▃▄▅  ·  ▲ +12k
-☀  Clear  60.2k / 362k (17%)  ·  259.8k to go (71.8%)
-☁  Cloudy  164.1k / 362k (46%)
+↯  Compact soon  326.5k / 362k (90%)  ·  compact due  ·  ▅▅▆▆▇▇  ·  ▲ +12k  ·  42 calls  ·  13.7M cache turn  ·  41.6M usage session
+☇  Storm  299.9k / 362k (83%)  ·  20.1k to go (5.6%)  ·  ▃▄▅▅▆▇  ·  ▲ +12k  ·  42 calls  ·  12.6M cache turn  ·  41.6M usage session
+☁  Cloudy  164.1k / 362k (46%)  ·  155.9k to go (43.1%)  ·  ▁▂▃▃▄▅  ·  ▲ +12k  ·  1 call  ·  164.1k cache turn  ·  164.1k usage session
+☀  Clear  60.2k / 362k (17%)  ·  259.8k to go (71.8%)  ·  1 call  ·  0 cache turn
+☁  Cloudy  164.1k / 362k (46%)  ·  1 call  ·  0 cache turn
 ```
 
 - **Every percentage in the band is of the window**, so all of them read against one denominator.
 - **Only the sparkline and the trend are dropped for width.** No figure is.
-- **`cache` and `usage` are the same quantity over two spans** — the turn just finished, and every turn since `/clear`. They coincide on a session's first turn, which is one turn being both. A turn makes one model call per step and every call reads the context again, so a turn's total can run to many times the context it read: `6.6M cache turn` beside a 157.9k context is about 42 calls, not a miscount. Both are **cache-served tokens only** — never all input and output, and never spend.
+- **The call count is what makes the cache figure legible.** A turn's usage is its model calls summed, so a long agentic turn reads the context once per call: `13.7M cache turn` beside a 326.5k context is about 42 calls, not a miscount. The count is the engine's own step index, so it is a count rather than a guess.
+- **`cache` and `usage` are the same quantity over two spans** — the turn just finished, and every turn since `/clear`. They coincide on a session's first turn, which is one turn being both. Both are **cache-served tokens only** — never all input and output, and never spend.
+- **`cache turn` reports a zero rather than going silent.** A turn that read nothing from the cache shows `0 cache turn`, which is the reading that says the cache did nothing for it — the number worth seeing. `usage session` still appears only once something has been served.
 - **The window's headroom is reported as `to go` only.** The breakdown also carries a free-space row; the band leaves it out because the two track each other, and `/cache-tax` reports the free figure for anyone who wants it.
 
 ## The status line
@@ -128,7 +131,7 @@ cold write 200.5k · $4.01 · /keepwarm
 
 | # | Slot | Forms | Shown when | What it means |
 | --- | --- | --- | --- | --- |
-| 1 | **state** | `off` · `on` · `stopped: <reason>` | Always | `stopped` names why a window gave up, which is the difference between one you never armed and one that was armed and stopped |
+| 1 | **state** | `off` · `on` · `stopped: <reason>` | Always | `stopped` names why a window gave up **early**, which is what tells a failure from a window that simply ran out its hours — that one reads `off`, as an unarmed window does |
 | 2 | **window** | `ends <clock>` | A warming window is armed | When the window `/keepwarm` armed runs out — a budget this plugin chose, not a cache lifetime a provider promised |
 | 3 | **ping** | `ping at <clock>` · `(held <gap>)` · `(went at <gap>)` · `ping after first turn` · `ping after next turn` | A warming window is armed | The gap is what the last ping proved about the provider's TTL, and it moved the interval the next ping uses. The two `ping after` forms stand in for the time while there is no warm reading to count from |
 | 4 | **cost** | `$<from cache> of $<no cache>, <share>%` · `n/a` | A context exists | What one read of this context costs from cache, what the same context costs uncached, and the first as a share of the second |
@@ -151,7 +154,7 @@ stopped: ping not sent (nothing-to-fork) · $0.0020 of $0.03, 7% · /keepwarm to
 **The same facts, compactly, with the context as a bare token count** — there is no room for the window beside it. It is the desktop and terminal form plus the window, minus the hints.
 
 ```text
-<state> · [ping] · <context> · [<tokens> cache turn] · [<cost>]
+<state> · [ping] · <context> · [<n> calls · <tokens> cache turn] · [<cost>]
 ```
 
 | # | Slot | Forms | Shown when | What it means |
@@ -159,13 +162,13 @@ stopped: ping not sent (nothing-to-fork) · $0.0020 of $0.03, 7% · /keepwarm to
 | 1 | **state** | `off` · `ends <clock>` · `stopped: <reason>` | Always | The same facts as the other form's state slot, with no `on`: an armed window is already saying when it ends |
 | 2 | **ping** | As the desktop and terminal form's | A warming window is armed | |
 | 3 | **context** | `ctx <tokens>` · `no context yet` | Always | A bare count, because this row has no width for the window beside it |
-| 4 | **cache** | `<tokens> cache turn` | The last turn served something from cache | As the band's slot |
+| 4 | **cache** | `<n> calls · <tokens> cache turn` | A turn has completed | As the band's two slots, in one: the same reading in the same words, because this row is the only surface showing it |
 | 5 | **cost** | As the desktop and terminal form's | A context exists | |
 
 ```text
-off · ctx 199.1k · 190.4k cache turn · $0.0060 of $0.09, 7%
-ends 7:00pm · ping at 1:50pm · ctx 199.1k · 190.4k cache turn · $0.0060 of $0.09, 7%
-ends 7:00pm · ping after next turn · ctx 199.1k · $0.0060 of $0.09, 7%
+off · ctx 199.1k · 1 call · 190.4k cache turn · $0.0060 of $0.09, 7%
+ends 7:00pm · ping at 1:50pm · ctx 199.1k · 1 call · 190.4k cache turn · $0.0060 of $0.09, 7%
+ends 7:00pm · ping after next turn · ctx 199.1k · 1 call · 0 cache turn · $0.0060 of $0.09, 7%
 off · no context yet
 ```
 
