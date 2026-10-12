@@ -643,28 +643,40 @@ function band(
     t({ color: f.color, bold: true }, `${f.icon}  ${f.word}`),
     t({ color: f.color }, `  ${fmtTok(s.ctx)} / ${fmtTok(s.window)} (${s.percent}%)`),
   ]
-  // The distance to the point /autocompact actually fires, right after the fill.
-  // This is the window figure worth acting on: the free space the breakdown also
-  // reports measures nearly the same thing and reads as a near-duplicate beside
-  // it, so only this one is drawn. Absent until a context exists — with nothing in
-  // use the figure would only restate the threshold.
-  if (s.compactAt != null && s.ctx > 0) {
-    const toGo = s.compactAt - s.ctx
-    // The share is of the window, like the fill's and the free slot's, so all
-    // three read against one denominator even though only the fill and the free
-    // slot are complements of each other.
-    const share = s.window > 0 ? ` (${((toGo / s.window) * 100).toFixed(1)}%)` : ''
-    parts.push(dim(`  ·  ${toGo > 0 ? `${fmtTok(toGo)} to go${share}` : 'compact due'}`))
-  }
+  // The sparkline sits with the fill it continues: the same figure drawn, in the
+  // same colour, so the row leads with its two coloured slots before the dim ones.
   const spark = columns >= 56 ? sparkline(s.history, s.window) : ''
   if (spark) parts.push(dim('  ·  '), t({ color: f.color }, spark))
   const trend = columns >= 72 ? trendText(s.history) : null
   if (trend) parts.push(dim(`  ·  ${trend}`))
-  if (s.calls > 0) parts.push(dim(`  ·  ${callCountText(s)}  ·  ${fmtTok(s.lastRead)} cache turn`))
+  // The distance to the point /autocompact actually fires. This is the window
+  // figure worth acting on: the free space the breakdown also reports measures
+  // nearly the same thing and reads as a near-duplicate beside it, so only this
+  // one is drawn. Absent until a context exists — with nothing in use the figure
+  // would only restate the threshold.
+  //
+  // It follows the history rather than the fill because it is the one slot whose
+  // meaning changes as it shrinks: roomy is a fact, nearly gone is a call to act.
+  // So it is dim while there is room and takes the forecast's own alarm colour
+  // once the window reaches the red step — the same moment the forecast turns,
+  // rather than a token count of its own, which would only suit one window size.
+  if (s.compactAt != null && s.ctx > 0) {
+    const toGo = s.compactAt - s.ctx
+    // The share is of the window, like the fill's, so both read against one
+    // denominator even though only the fill is a complement of it.
+    const share = s.window > 0 ? ` (${((toGo / s.window) * 100).toFixed(1)}%)` : ''
+    const text = toGo > 0 ? `${fmtTok(toGo)} to go${share}` : 'compact due'
+    parts.push(f.color === 'red' ? t({ color: 'red' }, `  ·  ${text}`) : dim(`  ·  ${text}`))
+  }
+  // The two measures of the same turn, joined by a slash so they read as one slot:
+  // how many model calls it made, and how many tokens the cache served across
+  // them. The slash is the band's mark for sub-fields; `·` separates slots.
+  if (s.calls > 0) parts.push(dim(`  ·  ${callCountText(s)} / ${fmtTok(s.lastRead)} cache turn`))
   // The running total, beside the turn it continues: a turn's read is the figure
   // that moves, the session's is the one that adds up to what the cache has
-  // served you since /clear.
-  if (s.readSession > 0) parts.push(dim(`  ·  ${fmtTok(s.readSession)} usage session`))
+  // served you since /clear. `session` is enough — `cache turn` is right beside
+  // it, and the row has no other session figure to be confused with.
+  if (s.readSession > 0) parts.push(dim(`  ·  ${fmtTok(s.readSession)} session`))
   return Box({ flexDirection: 'row', paddingX: 1, children: parts })
 }
 

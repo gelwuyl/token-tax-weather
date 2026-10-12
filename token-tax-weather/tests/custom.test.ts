@@ -895,7 +895,7 @@ describe('the cache read is a per-turn quantity, not a size held', () => {
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 2200000 }) }))
     const band = await bandOf($)
     // The count is what stops `2.2M` reading as a miscount beside a 155.2k context.
-    expect(band?.text).toContain('14 calls  ·  2.2M cache turn')
+    expect(band?.text).toContain('14 calls / 2.2M cache turn')
     const text = (await $.command.run(run('cache-tax', ''))).text
     expect(text).toMatch(/cache       2,200,000 tokens served from cache this turn over 14 calls, ≈14 × the 155\.2k context/)
     // The old line claimed a share of context and capped it at 100%; that claim is gone.
@@ -1089,8 +1089,8 @@ describe('the session read total', () => {
     await $.turn.complete(turn())
     await $.turn.complete(turn())
     const band = await bandOf($)
-    expect(band?.text).toContain('1 call  ·  200k cache turn')
-    expect(band?.text).toContain('400k usage session')
+    expect(band?.text).toContain('1 call / 200k cache turn')
+    expect(band?.text).toContain('400k session')
   })
 
   test('the band shows no session slot before a turn has reported one', async ($, on) => {
@@ -1121,11 +1121,11 @@ describe('approved band and status split', () => {
     await $.session.start(bandSession)
     await $.turn.complete(turn())
     await $.turn.complete(turn())
-    // 1. Band: forecast · <ctx tokens> of <window tokens> (<pct>%) · sparkline · trend · <n> calls · <n> cache turn · <n> usage session
+    // 1. Band: forecast · <ctx tokens> of <window tokens> (<pct>%) · sparkline · trend · <n> to go · <n> calls / <n> cache turn · <n> session
     const band = await bandOf($, { columns: 120 })
     // The fixture's threshold stands in for the engine's: `rawMax` less 20000, so
     // 362k less 20k against a 200k context leaves 142k to go.
-    expect(band?.text).toBe('☂  Showers  200k / 362k (55%)  ·  142k to go (39.2%)  ·  ▄▄  ·  steady  ·  1 call  ·  200k cache turn  ·  400k usage session')
+    expect(band?.text).toBe('☂  Showers  200k / 362k (55%)  ·  ▄▄  ·  steady  ·  142k to go (39.2%)  ·  1 call / 200k cache turn  ·  400k session')
     // No warming state, ping, money, or hints in band
     expect(band?.text).not.toMatch(/keepwarm|ping|left|\$|\/keepwarm|\/cache-tax/)
 
@@ -1177,10 +1177,37 @@ describe('approved band and status split', () => {
     await $.session.start(bandSession)
     await $.turn.complete(turn())
     const band = await bandOf($, { columns: 120 })
-    expect(band?.text).toContain('200k / 362k (55%)  ·  142k to go (39.2%)')
+    // The distance follows the history, so the fill is no longer beside it.
+    expect(band?.text).toContain('142k to go (39.2%)')
     expect(band?.text).not.toContain('136.6k')
     const card = (await $.command.run(run('cache-tax', ''))).text
     expect(card).toMatch(/free        136,600 tokens left in the window \(37\.7%\)/)
+  })
+
+  test('the distance to autocompact takes the alarm colour only once the window is red', async ($, on) => {
+    mock.clock(on, { now: START })
+    // 330k of a 362k window is 91%: past the ramp's red step, and still short of
+    // the fixture's threshold at rawMax less 20000, so there is a distance to draw.
+    world(on, { live: { tokens: 330000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('12k to go (3.3%)')
+    // The slot turns red at the moment the forecast does — one ramp, one threshold,
+    // rather than a token count of its own that would suit only one window size.
+    expect(band?.colors).toContainEqual({ text: '  ·  12k to go (3.3%)', color: 'red' })
+  })
+
+  test('the distance to autocompact stays dim while there is room', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 200000 }, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('142k to go (39.2%)')
+    // Dim carries no colour prop, which is what `colors` is filtered on: roomy is
+    // a fact, not an alarm.
+    expect(band?.colors.map(c => c.text)).not.toContain('  ·  142k to go (39.2%)')
   })
 
   test('a context past the autocompact threshold says so rather than counting up', async ($, on) => {
