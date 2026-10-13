@@ -114,6 +114,7 @@ function world(on: On, opts: {
   }
   const forks: string[] = []
   const status: Array<string | undefined> = []
+  const invalidations: string[] = []
   const logs: string[] = []
   const entered: string[] = []
   const commands: CommandSpec[] = []
@@ -173,6 +174,9 @@ function world(on: On, opts: {
   on('classic.SessionStart', () => ({}))
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
   on('ui.status', ($, e) => { status.push(e.text); return { value: undefined } })
+  // The band is a tree the engine caches until a plugin invalidates it, so a paint
+  // the person cannot see refreshed is a paint that never called this.
+  on('ui.invalidate', ($, e) => { invalidations.push(e.event); return { value: undefined } })
   // The band's element table, as a surface would hand it back: plain objects, so a
   // test can read a tree's colours and children without a painter.
   // Nothing mocks `ui.resolve` or `ui.render`: `$.ui.mount` supplies the surface's
@@ -185,7 +189,7 @@ function world(on: On, opts: {
     const value: ModelForkResult = { isAnswered: true, text: 'warm', usage: { input_tokens: a.input ?? 2, output_tokens: a.out ?? 1, cache_read_input_tokens: a.read, cache_creation_input_tokens: a.write } }
     return { value }
   })
-  return { store, sets, deletes, forks, status, logs, entered, commands, usageArgs }
+  return { store, sets, deletes, forks, status, logs, entered, commands, usageArgs, invalidations }
 }
 
 // What one `AbovePrompt` band would draw, as the surface would draw it. The
@@ -1137,6 +1141,29 @@ describe('status-line notices', () => {
     await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 0 }) }))
     expect(w.status.at(-1) ?? '').not.toMatch(/cold write/)
     expect(w.status.at(-1) ?? '').toMatch(/^off · /)
+  })
+
+  test('a notice-bearing paint still invalidates the band, so the row the line describes is redrawn', async ($, on) => {
+    mock.clock(on, { now: START })
+    // A cold write is raised at the end of its own turn and survives the next, and a
+    // career prompt ahead of a cold turn raises the guard notice. Both paint the line
+    // through the notice branch, and both must still ask for the band to be redrawn:
+    // the band is cached by the engine, so returning early left it showing the turn
+    // before while the line announced something else.
+    const w = world(on, { store: new Map(), live: { tokens: 100000 } })
+    await $.session.start(session)
+    // Session start paints the ordinary readout, so the count from here is what the
+    // notice-bearing paint below has to move on its own.
+    const afterStart = w.invalidations.length
+    await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 60000 }) }))
+    expect(w.status.at(-1)).toMatch(/^cold write 60k · /)
+    expect(w.invalidations.length).toBeGreaterThan(afterStart)
+    expect(w.invalidations.at(-1)).toBe('ui.render')
+    // The turn after it clears the notice and paints the readout, and must invalidate too.
+    const atNotice = w.invalidations.length
+    await $.turn.complete(turn())
+    expect(w.status.at(-1) ?? '').toMatch(/^off · /)
+    expect(w.invalidations.length).toBeGreaterThan(atNotice)
   })
 
   test('the command-name clash stays a transcript line, never a status notice', async ($, on) => {

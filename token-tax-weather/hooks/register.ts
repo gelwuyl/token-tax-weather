@@ -831,14 +831,20 @@ async function liveSurfaces($: EngineInterface): Promise<readonly RenderSurface[
 async function publish($: EngineInterface, s: State) {
   s.now = await $.clock.now()
   if (!s.owns) return
+  // A notice outranks the readout on the line, and every path below still has to
+  // reach the invalidate at the end: the band is a tree the engine caches, and a
+  // paint that returned early here would leave the band showing the turn before
+  // while the line announced the notice.
+  let text: string
   if (s.notice) {
-    $.ui.status(s.notice)
-    return
+    text = s.notice
+  } else {
+    // A client can attach after session.start, so ask the live roster on every paint.
+    const live = await liveSurfaces($)
+    const raised = live ? live.some(surface => BAND_SURFACES.has(surface)) : BAND_SURFACES.has(s.surface)
+    text = raised ? hintText(s, s.now) : statusText(s, s.now)
   }
-  // A client can attach after session.start, so ask the live roster on every paint.
-  const live = await liveSurfaces($)
-  const raised = live ? live.some(surface => BAND_SURFACES.has(surface)) : BAND_SURFACES.has(s.surface)
-  $.ui.status(raised ? hintText(s, s.now) : statusText(s, s.now))
+  $.ui.status(text)
   try {
     $.ui.invalidate('ui.render')
   } catch {}
