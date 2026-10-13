@@ -55,8 +55,8 @@ claude plugin install token-tax-weather@token-tax-weather
 | --- | --- | --- | --- |
 | **forecast** | `☀ Clear` · `☁ Cloudy` · `☂ Showers` · `☇ Storm` · `↯ Compact soon` | Always | The band's colour — yellow, cyan, blue, magenta, red — at 25%, 50%, 75% and 90% of the window |
 | **fill** | `<context> / <window> (<percent>%)` | Always | The engine's own input figure for the live window, over the window this band measures against. Both the percentage and `to go` below are read against that one denominator |
-| **sparkline** | up to twelve bars from `▁▂▃▄▅▆▇█` | A completed reading exists, and 56+ columns | One bar per reading, its height that reading's share of the window. Drawn in the forecast's colour, so it sits with the fill it continues |
-| **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings, and 72+ columns | The move since the previous reading. The arrow carries the direction, so the words do not |
+| **sparkline** | up to three bars from `▁▂▃▄▅▆▇█` | A completed reading exists, and 56+ columns | One bar per reading, its height that reading's share of the window. Drawn in the forecast's colour, so it sits with the fill it continues |
+| **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings, and 72+ columns | The move since the previous reading. The arrow carries the direction, so the words do not. Coloured by delta: green for context reductions (`▼`), yellow/red for growth (`▲`), dim for `steady` |
 | **to go** | `<tokens> to go (<to-go%>)` · `compact due` | A context exists, and the engine reports an autocompact threshold | The distance to where `/autocompact` fires. Absent with nothing in use, where it would only restate the threshold; `compact due` once past it. **Dim while there is room, red once the window reaches the red step** — the same moment the forecast turns |
 | **turn cache** | `<n> calls / <tokens> cache / <hit>%` | A turn has completed | Three measures of the turn just gone. **calls** is the model calls it made, from the engine's step index. **tokens** is cache-served tokens across those calls (`0` on a cold turn). **hit%** is the share of that turn's prompt tokens the cache carried (`0%` when cold) |
 | **speed** | `<speed> tok/s` | Generation timing is recorded | Model generation throughput across the calls of the last turn |
@@ -64,9 +64,9 @@ claude plugin install token-tax-weather@token-tax-weather
 **Widest to narrowest:**
 
 ```text
-↯  Compact soon  326.5k / 362k (90%)  ·  ▅▅▆▆▇▇  ·  ▲ +12k  ·  compact due  ·  42 calls / 13.7M cache / 99%  ·  68 tok/s
-☇  Storm  299.9k / 362k (83%)  ·  ▃▄▅▅▆▇  ·  ▲ +12k  ·  20.1k to go (5.6%)  ·  42 calls / 12.6M cache / 99%  ·  68 tok/s
-☁  Cloudy  164.1k / 362k (46%)  ·  ▁▂▃▃▄▅  ·  ▲ +12k  ·  155.9k to go (43.1%)  ·  1 call / 164.1k cache / 99%
+↯  Compact soon  326.5k / 362k (90%)  ·  ▆▇█  ·  ▲ +12k  ·  compact due  ·  42 calls / 13.7M cache / 99%  ·  68 tok/s
+☇  Storm  299.9k / 362k (83%)  ·  ▄▅▆  ·  ▲ +12k  ·  20.1k to go (5.6%)  ·  42 calls / 12.6M cache / 99%  ·  68 tok/s
+☁  Cloudy  164.1k / 362k (46%)  ·  ▂▃▄  ·  ▲ +12k  ·  155.9k to go (43.1%)  ·  1 call / 164.1k cache / 99%
 ☀  Clear  60.2k / 362k (17%)  ·  259.8k to go (71.8%)  ·  1 call / 0 cache / 0%
 ☁  Cloudy  164.1k / 362k (46%)  ·  1 call / 0 cache / 0%
 ```

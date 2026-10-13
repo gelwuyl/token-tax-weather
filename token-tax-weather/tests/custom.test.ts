@@ -1320,6 +1320,7 @@ describe('approved band and status split', () => {
     const band = await bandOf($, { columns: 120 })
     expect(band?.text).toContain('▲ +55.1k')
     expect(band?.text).not.toContain('last turn')
+    expect(band?.colors).toContainEqual({ text: '▲ +55.1k', color: 'yellow' })
   })
 
   test('a fall names the move too, and carries no sign of its own', async ($, on) => {
@@ -1333,6 +1334,50 @@ describe('approved band and status split', () => {
     const band = await bandOf($, { columns: 120 })
     expect(band?.text).toContain('▼ 55.1k')
     expect(band?.text).not.toContain('last turn')
+    expect(band?.colors).toContainEqual({ text: '▼ 55.1k', color: 'green' })
+  })
+
+  test('a rise in a compact-soon window turns red', async ($, on) => {
+    mock.clock(on, { now: START })
+    const live = { tokens: 330000 }
+    world(on, { live, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    live.tokens = 335000
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('▲ +5k')
+    expect(band?.colors).toContainEqual({ text: '▲ +5k', color: 'red' })
+  })
+
+  test('a turn with no move is steady and carries no colour', async ($, on) => {
+    mock.clock(on, { now: START })
+    const live = { tokens: 200000 }
+    world(on, { live, rawMax: 362000 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    // Same context next turn -> steady
+    await $.turn.complete(turn())
+    const band = await bandOf($, { columns: 120 })
+    expect(band?.text).toContain('steady')
+    expect(band?.colors.map(c => c.text)).not.toContain('steady')
+  })
+
+  test('the sparkline is capped at three bars even over many turns', async ($, on) => {
+    mock.clock(on, { now: START })
+    const live = { tokens: 100000 }
+    world(on, { live, rawMax: 362000 })
+    await $.session.start(bandSession)
+    // Run 5 turns
+    for (let i = 1; i <= 5; i++) {
+      live.tokens = 100000 + i * 20000
+      await $.turn.complete(turn())
+    }
+    const band = await bandOf($, { columns: 120 })
+    // The sparkline should have exactly 3 bar characters from SPARK (e.g. ▄▄▄)
+    const match = band?.text.match(/[▁▂▃▄▅▆▇█]+/g)
+    expect(match).not.toBeNull()
+    expect(match![0]!.length).toBe(3)
   })
 
   test('the band carries the distance to autocompact but not the free space', async ($, on) => {

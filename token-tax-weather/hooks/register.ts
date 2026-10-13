@@ -609,7 +609,9 @@ function disarm(s: State) {
 // --- The AbovePrompt band ----------------------------------------------------
 // Only one plugin can draw AbovePrompt: returning a tree stops the hook chain.
 
-/** Readings the sparkline shows, oldest first. */
+/** Maximum readings the sparkline shows, oldest first. */
+const SPARK_BARS = 3
+/** Recent readings kept in state. */
 const HISTORY = 12
 const SPARK = '▁▂▃▄▅▆▇█'
 
@@ -639,6 +641,7 @@ function forecastFor(percent: number) {
 function sparkline(history: number[], window: number): string {
   if (!window || !history.length) return ''
   return history
+    .slice(-SPARK_BARS)
     .map(t => {
       const level = Math.floor((t / window) * (SPARK.length - 1))
       return SPARK[Math.min(SPARK.length - 1, Math.max(0, level))]!
@@ -662,11 +665,11 @@ function callCountText(s: State): string {
   return `${s.calls} call${s.calls === 1 ? '' : 's'}`
 }
 
-function trendText(history: number[]): string | null {
+function trendText(history: number[]): { text: string; delta: number } | null {
   if (history.length < 2) return null
   const delta = history[history.length - 1]! - history[history.length - 2]!
-  if (delta === 0) return 'steady'
-  return `${delta > 0 ? '▲ +' : '▼ '}${fmtTok(Math.abs(delta))}`
+  const text = delta === 0 ? 'steady' : `${delta > 0 ? '▲ +' : '▼ '}${fmtTok(Math.abs(delta))}`
+  return { text, delta }
 }
 
 /**
@@ -770,7 +773,14 @@ function band(
   const spark = columns >= 56 ? sparkline(s.history, s.window) : ''
   if (spark) parts.push(dim('  ·  '), t({ color: f.color }, spark))
   const trend = columns >= 72 ? trendText(s.history) : null
-  if (trend) parts.push(dim(`  ·  ${trend}`))
+  if (trend) {
+    const el = trend.delta > 0
+      ? t({ color: f.color === 'red' ? 'red' : 'yellow' }, trend.text)
+      : trend.delta < 0
+        ? t({ color: 'green' }, trend.text)
+        : dim(trend.text)
+    parts.push(dim('  ·  '), el)
+  }
   // The distance to the point /autocompact actually fires. This is the window
   // figure worth acting on: the free space the breakdown also reports measures
   // nearly the same thing and reads as a near-duplicate beside it, so only this
