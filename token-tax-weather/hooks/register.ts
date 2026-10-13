@@ -137,6 +137,16 @@ export type State = {
   calls: number
   /** Steps seen in the turn now running; moved into `calls` when that turn completes. */
   steps: number
+  /** Output tokens generated across all steps of the last completed main turn. */
+  turnOut: number
+  /** Generation duration in milliseconds summed across the model calls of the last turn. */
+  turnDurationMs: number
+  /** Generation speed in tokens per second for the last completed turn, or null. */
+  speedToksPerSec: number | null
+  /** Live accumulator of step output tokens for the turn in flight. */
+  accumStepsOut: number
+  /** Live accumulator of step duration in milliseconds for the turn in flight. */
+  accumStepsDurationMs: number
   /** True once this mod's command names are the session's, so the footer slot is ours to write. */
   owns: boolean
   /** The window the fill is measured against: the compaction window /autocompact sets, else the model's. */
@@ -358,25 +368,42 @@ export function fmtShare(usd: number | null, base: number | null): string {
  * The prices themselves are not lost: `/cache-tax` prints all three, each against
  * the uncached baseline, where there is room to say what a sign means.
  */
-export function costSlotText(hit: string, saved: number | null, effect: number | null): string {
+/** Formats generation speed in tokens per second, or empty string if not measured. */
+export function fmtSpeed(speed: number | null): string {
+  if (speed == null || speed <= 0 || !Number.isFinite(speed)) return ''
+  return `${speed >= 10 ? Math.round(speed) : speed.toFixed(1)} tok/s`
+}
+
+/** Formats the turn's cache telemetry: calls / tokens cache / hit%. */
+function turnCacheText(s: State): string {
+  const hit = hitPct(s.lastRead, s.lastPrompt)
+  return `${callCountText(s)} / ${fmtTok(s.lastRead)} cache / ${hit || '0%'}`
+}
+
+/**
+ * The status line's cost slot: total tokens saved this session (since /clear),
+ * and the rate discount for the model.
+ *
+ * Moving session tokens here from the band keeps the band focused on the turn
+ * that just completed (calls / tokens cache / hit% · speed), while the status
+ * line anchors the persistent session facts (state, timer, session tokens,
+ * and rate discount).
+ */
+export function costSlotText(sessionTokens: number, saved: number | null, effect: number | null): string {
   // No rates for the model: nothing computable, so the unknown keeps its own form.
   if (saved == null) return fmtSignedUsd(effect)
   // A read that costs as much as uncached input, or more, is not a saving, and
   // `0% saved` would have to mean both "no discount" and "a surcharge". The signed
   // money carries that distinction instead, as it always has.
   if (saved <= 0) return fmtSignedUsd(effect)
-  // The two read as one story — this much of the prompt was carried by the cache,
-  // and a carried token costs this much less — while staying distinguishable by
-  // their own words, since one is a measurement of the turn and the other a rate
-  // that no turn can change.
   const parts: string[] = []
-  if (hit) parts.push(`${hit} from cache`)
+  if (sessionTokens > 0) parts.push(`${fmtTok(sessionTokens)} session`)
   parts.push(`${saved}% saved`)
   return parts.join(', ')
 }
 
 function effectSlot(s: State): string {
-  return costSlotText(hitPct(s.lastRead, s.lastPrompt), savedPct(warmUsd(s), uncachedUsd(s)), cacheEffectUsd(s))
+  return costSlotText(s.readSession, savedPct(warmUsd(s), uncachedUsd(s)), cacheEffectUsd(s))
 }
 
 /** Everything a fork bills: the cache read, any cache write, uncached input at its own rate, and the output. */
@@ -425,6 +452,11 @@ export function resetForClear(s: State) {
   s.turns = 0
   s.calls = 0
   s.steps = 0
+  s.turnOut = 0
+  s.turnDurationMs = 0
+  s.speedToksPerSec = null
+  s.accumStepsOut = 0
+  s.accumStepsDurationMs = 0
   s.percent = 0
   s.free = 0
   s.compactAt = null
@@ -533,10 +565,10 @@ function statusText(s: State, now: number): string {
   const ping = nextPingText(s, now)
   if (ping) parts.push(ping)
   parts.push(s.ctx > 0 ? `ctx ${fmtTok(s.ctx)}` : 'no context yet')
-  // The same reading the band carries, in the band's own words: a row that showed
-  // the cache figure without the call count that produced it would be showing the
-  // one number this slot exists to explain.
-  if (s.calls > 0) parts.push(`${callCountText(s)} · ${fmtTok(s.lastRead)} cache turn`)
+  // The same reading the band carries: calls / tokens cache / hit%
+  if (s.calls > 0) parts.push(turnCacheText(s))
+  const speed = fmtSpeed(s.speedToksPerSec)
+  if (speed) parts.push(speed)
   if (s.ctx > 0) parts.push(effectSlot(s))
   return parts.join(' · ')
 }
@@ -725,15 +757,10 @@ function band(
     const text = toGo > 0 ? `${fmtTok(toGo)} to go${share}` : 'compact due'
     parts.push(f.color === 'red' ? t({ color: 'red' }, `  ·  ${text}`) : dim(`  ·  ${text}`))
   }
-  // The two measures of the same turn, joined by a slash so they read as one slot:
-  // how many model calls it made, and how many tokens the cache served across
-  // them. The slash is the band's mark for sub-fields; `·` separates slots.
-  if (s.calls > 0) parts.push(dim(`  ·  ${callCountText(s)} / ${fmtTok(s.lastRead)} cache turn`))
-  // The running total, beside the turn it continues: a turn's read is the figure
-  // that moves, the session's is the one that adds up to what the cache has
-  // served you since /clear. `session` is enough — `cache turn` is right beside
-  // it, and the row has no other session figure to be confused with.
-  if (s.readSession > 0) parts.push(dim(`  ·  ${fmtTok(s.readSession)} session`))
+  // The turn's cache telemetry: calls made / tokens served / percentage cached.
+  if (s.calls > 0) parts.push(dim(`  ·  ${turnCacheText(s)}`))
+  const speed = fmtSpeed(s.speedToksPerSec)
+  if (speed) parts.push(dim(`  ·  ${speed}`))
   return Box({ flexDirection: 'row', paddingX: 1, children: parts })
 }
 
@@ -974,6 +1001,9 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   } else if (s.lastRequestAt) {
     lines.push(`cache       none served from cache${overCalls} — the last turn reported nothing`)
   }
+  if (s.speedToksPerSec != null && s.speedToksPerSec > 0) {
+    lines.push(`speed       ${fmtSpeed(s.speedToksPerSec)} generation throughput (${s.turnOut.toLocaleString('en-US')} tokens across ${s.turnDurationMs}ms)`)
+  }
   // The running total and what it was summed over, so the figure on the band is
   // one command away from being checkable rather than taken on trust.
   if (s.turns > 0) {
@@ -1026,7 +1056,9 @@ export function freshState(): State {
   return {
     sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
     guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0, lastPrompt: 0,
-    readSession: 0, turns: 0, calls: 0, steps: 0, owns: false,
+    readSession: 0, turns: 0, calls: 0, steps: 0,
+    turnOut: 0, turnDurationMs: 0, speedToksPerSec: null, accumStepsOut: 0, accumStepsDurationMs: 0,
+    owns: false,
     window: 0, percent: 0, windowSource: null, free: 0, compactAt: null,
     history: [], now: 0, surface: '', notice: null,
   }
@@ -1321,12 +1353,20 @@ export const register: Register = on => {
 
   on('turn.step', async function* ($, e, next) {
     if (!e.agentId) {
-      s.lastRequestAt = await $.clock.now()
+      const stepStart = await $.clock.now()
+      s.lastRequestAt = stepStart
       // The engine numbers a turn's steps from 0, so the highest index seen is one
       // less than the calls the turn has made.
       s.steps = Math.max(s.steps, e.index + 1)
+      const res = yield* next(e)
+      const stepEnd = await $.clock.now()
+      const stepDuration = Math.max(1, stepEnd - stepStart)
+      const outTokens = res?.usage?.output_tokens ?? 0
+      s.accumStepsOut += outTokens
+      s.accumStepsDurationMs += stepDuration
+      return res
     }
-    yield* next(e)
+    return yield* next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -1343,6 +1383,17 @@ export const register: Register = on => {
     // rather than zero — a zero here would read as a turn that cost nothing.
     s.calls = Math.max(1, s.steps)
     s.steps = 0
+    if (s.accumStepsDurationMs > 0 && s.accumStepsOut > 0) {
+      s.turnOut = s.accumStepsOut
+      s.turnDurationMs = s.accumStepsDurationMs
+      s.speedToksPerSec = Math.round((s.turnOut / (s.turnDurationMs / 1000)) * 10) / 10
+    } else {
+      s.turnOut = 0
+      s.turnDurationMs = 0
+      s.speedToksPerSec = null
+    }
+    s.accumStepsOut = 0
+    s.accumStepsDurationMs = 0
     const u = e.usage
     // The notice this turn raises, if any. It is set after the clear below, so a
     // cold write — a call to action — outlives its own turn by one, unlike the

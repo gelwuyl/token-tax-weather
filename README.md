@@ -2,8 +2,8 @@
 
 **A forecast band above the prompt, a state line beside the model picker.**
 
-- **The band** says what the context window is doing: how full it is, how much room is left, how far away `/autocompact` is, and how many tokens the cache served.
-- **The status line** says whether `/keepwarm` is armed, when it will ping, and what the last turn got from the cache — or, where no surface draws the band, the window facts themselves.
+- **The band** says what the context window is doing: how full it is, how much room is left, how far away `/autocompact` is, turn calls/cache/hit%, and generation speed.
+- **The status line** says whether `/keepwarm` is armed, when it will ping, total session tokens saved, and the rate discount — or, where no surface draws the band, the window facts themselves.
 - **A notice** briefly replaces the status line when something needs attention.
 
 ## Install
@@ -44,7 +44,7 @@ claude plugin install token-tax-weather@token-tax-weather
 ## The band
 
 ```text
-<forecast>  <context> / <window> (<percent>%) · [sparkline] · [trend] · [<to go> to go (<to-go%>)] · [<n> calls / <tokens> cache turn] · [<tokens> session]
+<forecast>  <context> / <window> (<percent>%) · [sparkline] · [trend] · [<to go> to go (<to-go%>)] · [<n> calls / <tokens> cache / <hit>%] · [<speed> tok/s]
 ```
 
 **Slots with no data are omitted, never left blank; `·` separates slots and `/` separates the fields inside one.** Token counts use `k` or `M`, to one decimal, trailing `.0` dropped.
@@ -58,24 +58,24 @@ claude plugin install token-tax-weather@token-tax-weather
 | **sparkline** | up to twelve bars from `▁▂▃▄▅▆▇█` | A completed reading exists, and 56+ columns | One bar per reading, its height that reading's share of the window. Drawn in the forecast's colour, so it sits with the fill it continues |
 | **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings, and 72+ columns | The move since the previous reading. The arrow carries the direction, so the words do not |
 | **to go** | `<tokens> to go (<to-go%>)` · `compact due` | A context exists, and the engine reports an autocompact threshold | The distance to where `/autocompact` fires. Absent with nothing in use, where it would only restate the threshold; `compact due` once past it. **Dim while there is room, red once the window reaches the red step** — the same moment the forecast turns |
-| **calls / cache** | `<n> calls / <tokens> cache turn` | A turn has completed | Two measures of one turn, so they share a slot. **calls** is the model calls it made, from the engine's own step index — the count, not an estimate, and the fact that makes the figure beside it legible. **cache turn** is cache-served tokens only, summed over those calls; `0` when the turn found no cache, which is a reading rather than an absence |
-| **session** | `<tokens> session` | Anything has been served since `/clear` | The same quantity as `cache turn` over every turn since `/clear`; a compaction does not reset it |
+| **turn cache** | `<n> calls / <tokens> cache / <hit>%` | A turn has completed | Three measures of the turn just gone. **calls** is the model calls it made, from the engine's step index. **tokens** is cache-served tokens across those calls (`0` on a cold turn). **hit%** is the share of that turn's prompt tokens the cache carried (`0%` when cold) |
+| **speed** | `<speed> tok/s` | Generation timing is recorded | Model generation throughput across the calls of the last turn |
 
 **Widest to narrowest:**
 
 ```text
-↯  Compact soon  326.5k / 362k (90%)  ·  ▅▅▆▆▇▇  ·  ▲ +12k  ·  compact due  ·  42 calls / 13.7M cache turn  ·  41.6M session
-☇  Storm  299.9k / 362k (83%)  ·  ▃▄▅▅▆▇  ·  ▲ +12k  ·  20.1k to go (5.6%)  ·  42 calls / 12.6M cache turn  ·  41.6M session
-☁  Cloudy  164.1k / 362k (46%)  ·  ▁▂▃▃▄▅  ·  ▲ +12k  ·  155.9k to go (43.1%)  ·  1 call / 164.1k cache turn  ·  164.1k session
-☀  Clear  60.2k / 362k (17%)  ·  259.8k to go (71.8%)  ·  1 call / 0 cache turn
-☁  Cloudy  164.1k / 362k (46%)  ·  1 call / 0 cache turn
+↯  Compact soon  326.5k / 362k (90%)  ·  ▅▅▆▆▇▇  ·  ▲ +12k  ·  compact due  ·  42 calls / 13.7M cache / 99%  ·  68 tok/s
+☇  Storm  299.9k / 362k (83%)  ·  ▃▄▅▅▆▇  ·  ▲ +12k  ·  20.1k to go (5.6%)  ·  42 calls / 12.6M cache / 99%  ·  68 tok/s
+☁  Cloudy  164.1k / 362k (46%)  ·  ▁▂▃▃▄▅  ·  ▲ +12k  ·  155.9k to go (43.1%)  ·  1 call / 164.1k cache / 99%
+☀  Clear  60.2k / 362k (17%)  ·  259.8k to go (71.8%)  ·  1 call / 0 cache / 0%
+☁  Cloudy  164.1k / 362k (46%)  ·  1 call / 0 cache / 0%
 ```
 
 - **Every percentage in the band is of the window**, so all of them read against one denominator.
 - **Only the sparkline and the trend are dropped for width.** No figure is.
-- **The call count is what makes the cache figure legible.** A turn's usage is its model calls summed, so a long agentic turn reads the context once per call: `13.7M cache turn` beside a 326.5k context is about 42 calls, not a miscount. Divide the two and the context comes back, which is the check the slot exists to make possible.
-- **`cache turn` and `session` are the same quantity over two spans** — the turn just finished, and every turn since `/clear`. They coincide on a session's first turn, which is one turn being both. Both are **cache-served tokens only** — never all input and output, and never spend.
-- **`cache turn` reports a zero rather than going silent.** A turn that read nothing from the cache shows `0 cache turn`, which is the reading that says the cache did nothing for it — the number worth seeing. `session` still appears only once something has been served.
+- **The turn cache slot groups the three facts about that turn** — calls, cache volume, and hit rate. Dividing the volume by the calls gives your context back.
+- **`cache` reports zero rather than going silent.** A cold turn shows `0 cache / 0%`, confirming the cache served nothing.
+- **The session token count lives in the status line**, keeping the band focused on the current turn.
 - **The window's headroom is reported as `to go` only.** The breakdown also carries a free-space row; the band leaves it out because the two track each other, and `/cache-tax` reports the free figure for anyone who wants it.
 
 ## The status line
@@ -135,27 +135,27 @@ cold write 200.5k · $4.01 · /keepwarm
 | 1 | **state** | `off` · `on` · `stopped: <reason>` | Always | `stopped` names why a window gave up **early**, which is what tells a failure from a window that simply ran out its hours — that one reads `off`, as an unarmed window does |
 | 2 | **window** | `ends <clock>` | A warming window is armed | When the window `/keepwarm` armed runs out — a budget this plugin chose, not a cache lifetime a provider promised |
 | 3 | **ping** | `ping at <clock>` · `(held <gap>)` · `(went at <gap>)` · `ping after first turn` · `ping after next turn` | A warming window is armed | The gap is what the last ping proved about the provider's TTL, and it moved the interval the next ping uses. The two `ping after` forms stand in for the time while there is no warm reading to count from |
-| 4 | **cost** | `<hit>% from cache, <saving>% saved` · `n/a` | A context exists | **Two shares, and they are different kinds of figure.** The hit rate measures the *last turn*: the share of its prompt tokens the cache carried. The saving is a *rate*, not a measurement — see [Reading the price comparison](#reading-the-price-comparison) for why it cannot move. Both read higher as cheaper. |
+| 4 | **cost** | `[<tokens> session, ]<saving>% saved` · `n/a` | A context exists | **Session savings and rate discount.** Shows total cache tokens saved across all turns since `/clear`, paired with the model's rate discount. Absent before the first turn saves tokens; `93% saved` stands alone until then. |
 | 5 | **arm hint** | `/keepwarm to arm the window` | No warming window is armed | The command that changes the state in slot 1 |
 | 6 | **card hint** | `/cache-tax for the full card` | Always | Everything this row has no width for |
 
 ```text
-off · 99% from cache, 93% saved · /keepwarm to arm the window · /cache-tax for the full card
-on · ends 7:00pm · ping at 1:50pm · 99% from cache, 93% saved · /cache-tax for the full card
-on · ends 7:00pm · ping at 2:40pm (held 50m) · 99% from cache, 93% saved · /cache-tax for the full card
-on · ends 7:00pm · ping at 2:15pm (went at 50m) · 99% from cache, 93% saved · /cache-tax for the full card
-on · ends 7:00pm · ping after first turn · /cache-tax for the full card
-stopped: ping not sent (nothing-to-fork) · 99% from cache, 93% saved · /keepwarm to arm the window · /cache-tax for the full card
+off · 41.6M session, 93% saved · /keepwarm to arm the window · /cache-tax for the full card
+on · ends 7:00pm · ping at 1:50pm · 41.6M session, 93% saved · /cache-tax for the full card
+on · ends 7:00pm · ping at 2:40pm (held 50m) · 41.6M session, 93% saved · /cache-tax for the full card
+on · ends 7:00pm · ping at 2:15pm (went at 50m) · 41.6M session, 93% saved · /cache-tax for the full card
+on · ends 7:00pm · ping after first turn · 93% saved · /cache-tax for the full card
+stopped: ping not sent (nothing-to-fork) · 41.6M session, 93% saved · /keepwarm to arm the window · /cache-tax for the full card
 ```
 
-**The cost slot carries two shares, and they answer different questions.** The **hit rate** is what the last turn's prompt was made of; the **saving** is what a carried token is worth against an uncarried one. Read together they say how much of the prompt the cache took and how much that was worth. Both arrive together: the slot needs a context to exist, and the turn that reports one is the turn that names the model the rates are looked up by, so there is no state that has one share and not the other. **A surcharge or a zero keeps its signed money** — `+$0.03`, `+$0.00` — because a percentage could not say it: `0% saved` would have to mean both "no discount" and "costs more", and `-14% saved` is a saving with a minus sign. **No rates at all is `n/a`**, and carries no share.
+**The cost slot pairs session tokens with the rate discount.** The **session tokens** count what the cache has saved across all completed turns since `/clear`. The **saving** is what a carried token costs against an uncarried one. Before the first turn reports a cache read, `93% saved` stands alone. **A surcharge or a zero keeps its signed money** — `+$0.03`, `+$0.00` — because a percentage could not say it. **No rates at all is `n/a`**.
 
 ### The VS Code and mobile form, while no surface raises the band
 
 **The same facts, compactly, with the context as a bare token count** — there is no room for the window beside it. It is the desktop and terminal form plus the window, minus the hints.
 
 ```text
-<state> · [ping] · <context> · [<n> calls / <tokens> cache turn] · [<cost>]
+<state> · [ping] · <context> · [<n> calls / <tokens> cache / <hit>%] · [<speed> tok/s] · [<cost>]
 ```
 
 | # | Slot | Forms | Shown when | What it means |
@@ -163,13 +163,14 @@ stopped: ping not sent (nothing-to-fork) · 99% from cache, 93% saved · /keepwa
 | 1 | **state** | `off` · `ends <clock>` · `stopped: <reason>` | Always | The same facts as the other form's state slot, with no `on`: an armed window is already saying when it ends |
 | 2 | **ping** | As the desktop and terminal form's | A warming window is armed | |
 | 3 | **context** | `ctx <tokens>` · `no context yet` | Always | A bare count, because this row has no width for the window beside it |
-| 4 | **cache** | `<n> calls / <tokens> cache turn` | A turn has completed | The band's `calls / cache` slot, in the same words, because this row is the only surface showing it |
-| 5 | **cost** | As the desktop and terminal form's | A context exists | |
+| 4 | **cache** | `<n> calls / <tokens> cache / <hit>%` | A turn has completed | The band's turn cache slot, in the same words, because this row is the only surface showing it |
+| 5 | **speed** | `<speed> tok/s` | Generation timing is recorded | Model generation throughput |
+| 6 | **cost** | As the desktop and terminal form's | A context exists | |
 
 ```text
-off · ctx 199.1k · 1 call / 190.4k cache turn · 99% from cache, 93% saved
-ends 7:00pm · ping at 1:50pm · ctx 199.1k · 1 call / 190.4k cache turn · 99% from cache, 93% saved
-ends 7:00pm · ping after next turn · ctx 199.1k · 1 call / 0 cache turn · 0% from cache, 93% saved
+off · ctx 199.1k · 1 call / 190.4k cache / 99% · 41.6M session, 93% saved
+ends 7:00pm · ping at 1:50pm · ctx 199.1k · 1 call / 190.4k cache / 99% · 41.6M session, 93% saved
+ends 7:00pm · ping after next turn · ctx 199.1k · 1 call / 0 cache / 0% · 41.6M session, 93% saved
 off · no context yet
 ```
 
@@ -257,12 +258,12 @@ cost        for 66.7k tokens   no cache $0.03 = 100%
 - **Zero is `+$0.00`**: the two input costs are equal. It is a real answer, and it never takes parentheses.
 - **`n/a`:** no rates are configured for the model.
 
-**The card carries the signed difference because it has room to say what a sign means. The status line carries no money at all.** It used to — `$0.0020 of $0.03, 7%`, the two prices with the first as a share of the second — and that third figure was the reason to drop it. Both prices are `context × rate`, so **the context appears on both sides of their ratio and cancels**: what was left was the model's two rates and nothing else, always 7% for one model and always 14% for another, whatever the session was doing. A reading that cannot move is not a reading, so the line carries the two shares that do — `99% from cache, 93% saved`:
+**The card carries the signed difference because it has room to say what a sign means. The status line carries no money at all.** It carries session tokens and the model's rate discount — `41.6M session, 93% saved`:
 
-- **`99% from cache` is a measurement.** It is the share of the last turn's prompt tokens the cache served, read against that turn's own prompt. It moves every turn. A share that is real but not whole reads `99%` rather than `100%`, so the figure never claims the cache carried a prompt it did not.
-- **`93% saved` is a rate, and deliberately so.** It is what a carried token costs against an uncarried one. It is the *same* figure at every context size, because the context cancels out of it — only the money it is worth moves. It is stated anyway, because a rate is worth knowing once even though it is not worth watching.
+- **`session` counts the accumulated tokens served from cache** across all completed turns since `/clear`. It lives here rather than on the band, keeping the band focused on the current turn.
+- **`93% saved` is a rate, and deliberately so.** It is what a carried token costs against an uncarried one. It is the *same* figure at every context size, because the context cancels out of it (`(ctx × cacheRead) ÷ (ctx × input) = cacheRead ÷ input`) — only the money it is worth moves.
 
-**Neither is the turn's bill.** The hit rate measures what the cache did; the saving says what that is worth per token. Neither tells you whether the cache is *warm* right now — that depends on when the last request was. The card separately explains whether warming can pay for itself.
+**Neither is the turn's bill.** The turn's cache volume and hit rate are on the band; the status line anchors long-term session tokens and the rate discount. Neither tells you whether the cache is *warm* right now — that depends on when the last request was. The card separately explains whether warming can pay for itself.
 
 **Providers publish rates per million tokens, and this plugin's are no exception — but a rate is not a bill**, so the card shows the bill for the context in hand. The rates themselves, and where each one came from, are the subject of `/cache-tax-diagnostic`.
 
