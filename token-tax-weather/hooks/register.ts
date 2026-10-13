@@ -681,14 +681,25 @@ async function refreshWindow($: EngineInterface, s: State) {
     const breakdown = context.breakdown
     if (breakdown && breakdown.rawMaxTokens > 0) {
       s.window = breakdown.rawMaxTokens
-      s.percent = Math.round(breakdown.percentage)
       s.windowSource = breakdown.autocompactSource
-      if (typeof breakdown.totalTokens === 'number' && breakdown.totalTokens > 0) {
+      // Sum active 'used' categories: deferred tool schemas ('deferred') do not occupy
+      // the context window, nor do free space ('free') or compaction reserve ('buffer').
+      const usedCategories = breakdown.categories.filter(c => c.kind === 'used')
+      const usedTokens = usedCategories.length > 0
+        ? usedCategories.reduce((sum, c) => sum + (c.tokens > 0 ? c.tokens : 0), 0)
+        : null
+      if (usedTokens != null && usedTokens > 0) {
+        s.ctx = usedTokens
+        s.percent = Math.round((usedTokens / s.window) * 100)
+      } else if (typeof breakdown.totalTokens === 'number' && breakdown.totalTokens > 0) {
         s.ctx = breakdown.totalTokens
+        s.percent = Math.round(breakdown.percentage)
       } else if (typeof context.tokens === 'number' && context.tokens > 0) {
         s.ctx = context.tokens
+        s.percent = Math.round(context.percent ?? (s.ctx / s.window) * 100)
       } else if (breakdown.percentage > 0) {
         s.ctx = Math.round(breakdown.rawMaxTokens * (breakdown.percentage / 100))
+        s.percent = Math.round(breakdown.percentage)
       }
       // Branch on `kind`, never on the row's `name`: the engine stamps the kind
       // and warns the label is a display string that can be reworded.

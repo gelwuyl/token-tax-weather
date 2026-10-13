@@ -1,7 +1,7 @@
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type {
-  CommandRunInput, CommandSpec, ModelForkResult, On, PromptSubmitInput, RenderSurface,
+  CommandRunInput, CommandSpec, ContextCategory, ModelForkResult, On, PromptSubmitInput, RenderSurface,
   ContextWindowSource, SessionContextUsage, SessionStartInput, Settings, SettingsSource, TurnCompleteInput, TurnUsage,
 } from 'claude-code'
 
@@ -84,6 +84,8 @@ function world(on: On, opts: {
   window?: number
   /** When set, `{ breakdown }` answers a compaction window of this size. */
   rawMax?: number
+  /** When set, the breakdown reports these categories directly. */
+  categories?: ContextCategory[]
   /** When set, the breakdown reports this total token count independently of context.tokens. */
   breakdownTotalTokens?: number
   /** When set, the breakdown carries a `free` row of this many tokens. */
@@ -146,9 +148,9 @@ function world(on: On, opts: {
         isAutoCompactEnabled: true,
         percentage: opts.breakdownTotalTokens ? (opts.breakdownTotalTokens / opts.rawMax) * 100 : (tokens ? (tokens / opts.rawMax) * 100 : 0),
         totalTokens: opts.breakdownTotalTokens ?? tokens ?? 0,
-        categories: opts.free == null ? [] : [{
+        categories: opts.categories ?? (opts.free == null ? [] : [{
           name: 'Free space', tokens: opts.free, color: 'inactive', isDeferred: false, kind: 'free' as const,
-        }],
+        }]),
         apiUsage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
       }
     }
@@ -821,6 +823,37 @@ describe('the band above the prompt', () => {
     const band = await bandOf($)
     expect(band?.text).toContain('737.3k / 512k (144%)')
     expect(band?.text).toContain('compact due')
+  })
+
+  test('the band measures context from used categories excluding deferred tools and buffer', async ($, on) => {
+    mock.clock(on, { now: START })
+    // The native Desktop breakdown sums only rows with kind 'used'. Deferred tool schemas
+    // and compaction buffer are excluded from active context fill.
+    world(on, {
+      rawMax: 512000,
+      categories: [
+        { name: 'Messages', tokens: 91900, color: 'blue', isDeferred: false, kind: 'used' },
+        { name: 'MCP tools', tokens: 5900, color: 'orange', isDeferred: false, kind: 'used' },
+        { name: 'Skills', tokens: 4500, color: 'green', isDeferred: false, kind: 'used' },
+        { name: 'Memory files', tokens: 3900, color: 'yellow', isDeferred: false, kind: 'used' },
+        { name: 'System tools', tokens: 3900, color: 'grey', isDeferred: false, kind: 'used' },
+        { name: 'System prompt', tokens: 3300, color: 'grey', isDeferred: false, kind: 'used' },
+        { name: 'Custom agents', tokens: 722, color: 'grey', isDeferred: false, kind: 'used' },
+        { name: 'MCP server instructions', tokens: 305, color: 'grey', isDeferred: false, kind: 'used' },
+        { name: 'Autocompact buffer', tokens: 33000, color: 'grey', isDeferred: false, kind: 'buffer' },
+        { name: 'Free space', tokens: 364500, color: 'inactive', isDeferred: false, kind: 'free' },
+        { name: 'MCP tools (deferred)', tokens: 19600, color: 'grey', isDeferred: true, kind: 'deferred' },
+        { name: 'System tools (deferred)', tokens: 2300, color: 'grey', isDeferred: true, kind: 'deferred' },
+      ],
+      breakdownTotalTokens: 142300,
+    })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($)
+    // 91.9k + 5.9k + 4.5k + 3.9k + 3.9k + 3.3k + 722 + 305 = 114.4k (22%)
+    expect(band?.text).toContain('114.4k / 512k (22%)')
+    // Auto-compact threshold is 512k - 20k = 492k. 492k - 114.4k = 377.6k to go
+    expect(band?.text).toContain('to go')
   })
 
   test('the breakdown is asked for the free way, never the full one', async ($, on) => {
