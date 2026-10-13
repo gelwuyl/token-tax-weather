@@ -135,7 +135,7 @@ cold write 200.5k · $4.01 · /keepwarm
 | 1 | **state** | `off` · `on` · `stopped: <reason>` | Always | `stopped` names why a window gave up **early**, which is what tells a failure from a window that simply ran out its hours — that one reads `off`, as an unarmed window does |
 | 2 | **window** | `ends <clock>` | A warming window is armed | When the window `/keepwarm` armed runs out — a budget this plugin chose, not a cache lifetime a provider promised |
 | 3 | **ping** | `ping at <clock>` · `(held <gap>)` · `(went at <gap>)` · `ping after first turn` · `ping after next turn` | A warming window is armed | The gap is what the last ping proved about the provider's TTL, and it moved the interval the next ping uses. The two `ping after` forms stand in for the time while there is no warm reading to count from |
-| 4 | **cost** | `[<tokens> session, ]<saving>% saved` · `n/a` | A context exists | **Session savings and rate discount.** Shows total cache tokens saved across all turns since `/clear`, paired with the model's rate discount. Absent before the first turn saves tokens; `93% saved` stands alone until then. |
+| 4 | **cost** | `<tokens> session, <saving>% saved` · `n/a` | A context exists | **Session savings and rate discount.** Shows total cache tokens saved across all turns since `/clear`, paired with the model's rate discount. Displays `0 session, 93% saved` before any turn has hit cache. |
 | 5 | **arm hint** | `/keepwarm to arm the window` | No warming window is armed | The command that changes the state in slot 1 |
 | 6 | **card hint** | `/cache-tax for the full card` | Always | Everything this row has no width for |
 
@@ -148,7 +148,7 @@ on · ends 7:00pm · ping after first turn · 93% saved · /cache-tax for the fu
 stopped: ping not sent (nothing-to-fork) · 41.6M session, 93% saved · /keepwarm to arm the window · /cache-tax for the full card
 ```
 
-**The cost slot pairs session tokens with the rate discount.** The **session tokens** count what the cache has saved across all completed turns since `/clear`. The **saving** is what a carried token costs against an uncarried one. Before the first turn reports a cache read, `93% saved` stands alone. **A surcharge or a zero keeps its signed money** — `+$0.03`, `+$0.00` — because a percentage could not say it. **No rates at all is `n/a`**.
+**The cost slot pairs session tokens with the rate discount.** The **session tokens** count what the cache has saved across all completed turns since `/clear` (`0 session` before the first cached turn). The **saving** is what a carried token costs against an uncarried one. **A surcharge or a zero keeps its signed money** — `+$0.03`, `+$0.00` — because a percentage could not say it. **No rates at all is `n/a`**.
 
 ### The VS Code and mobile form, while no surface raises the band
 

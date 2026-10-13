@@ -9,7 +9,7 @@
     {
       "name": "token-tax-weather",
       "description": "Context weather, turn cache telemetry, and generation speed in the band; warming state, session savings, and rate discount on the status line. Includes /keepwarm, a warn-only guard, no automatic warming, and user-supplied rates.",
-      "version": "0.4.21",
+      "version": "0.4.22",
       "category": "productivity",
       "source": "./token-tax-weather"
     }

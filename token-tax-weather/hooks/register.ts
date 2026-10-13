@@ -396,10 +396,7 @@ export function costSlotText(sessionTokens: number, saved: number | null, effect
   // `0% saved` would have to mean both "no discount" and "a surcharge". The signed
   // money carries that distinction instead, as it always has.
   if (saved <= 0) return fmtSignedUsd(effect)
-  const parts: string[] = []
-  if (sessionTokens > 0) parts.push(`${fmtTok(sessionTokens)} session`)
-  parts.push(`${saved}% saved`)
-  return parts.join(', ')
+  return `${fmtTok(sessionTokens)} session, ${saved}% saved`
 }
 
 function effectSlot(s: State): string {

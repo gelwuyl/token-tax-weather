@@ -635,8 +635,8 @@ describe('the cost slot', () => {
 
   test('the slot pairs the session total and rate discount, and falls back cleanly', () => {
     expect(costSlotText(41600000, 93, -0.08)).toBe('41.6M session, 93% saved')
-    // No session tokens yet (e.g. before any turn, or first turn cold).
-    expect(costSlotText(0, 93, -0.08)).toBe('93% saved')
+    // Always visible even before any cache hits.
+    expect(costSlotText(0, 93, -0.08)).toBe('0 session, 93% saved')
     // No rates at all: the unknown keeps its own form, as it always has.
     expect(costSlotText(0, null, null)).toBe('n/a')
   })
