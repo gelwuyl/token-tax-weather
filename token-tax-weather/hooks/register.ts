@@ -1431,7 +1431,7 @@ export const register: Register = on => {
       s.readSession += u.cache_read_input_tokens
       s.turns += 1
       const full = prev > 20000 && write >= 0.5 * prev
-      if (full || s.coldWritePending) {
+      if ((full || s.coldWritePending) && write > 0) {
         const rates = ratesFor(s.lastModel)
         const usd = rates ? write * rates.cacheWrite / 1e6 : null
         s.misses.push({ at: now, tokens: write, usd })

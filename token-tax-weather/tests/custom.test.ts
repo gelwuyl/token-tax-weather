@@ -1071,6 +1071,18 @@ describe('status-line notices', () => {
     expect(w.status.at(-1) ?? '').toMatch(/^off · /)
   })
 
+  test('a cold prompt that writes zero tokens raises no cold write notice', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, { store: new Map(), live: { tokens: 100000 } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    clock.advance(6 * 60 * 1000)
+    await $.prompt.submit(prompt('hello'))
+    await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 0 }) }))
+    expect(w.status.at(-1) ?? '').not.toMatch(/cold write/)
+    expect(w.status.at(-1) ?? '').toMatch(/^off · /)
+  })
+
   test('the command-name clash stays a transcript line, never a status notice', async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on, { commands: ['keepwarm'] })
