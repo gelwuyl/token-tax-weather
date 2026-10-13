@@ -679,9 +679,19 @@ async function refreshWindow($: EngineInterface, s: State) {
     if (breakdown && breakdown.rawMaxTokens > 0) {
       s.window = breakdown.rawMaxTokens
       s.windowSource = breakdown.autocompactSource
-      // Sum active 'used' categories: deferred tool schemas ('deferred') do not occupy
-      // the context window, nor do free space ('free') or compaction reserve ('buffer').
-      const usedCategories = breakdown.categories.filter(c => c.kind === 'used')
+      const free = breakdown.categories.find(c => c.kind === 'free' || c.name === 'Free space')
+      s.free = free && free.tokens > 0 ? free.tokens : 0
+      s.compactAt = typeof breakdown.autoCompactThreshold === 'number' ? breakdown.autoCompactThreshold : null
+
+      // Sum active in-use categories: exclude free space, compaction buffer, and deferred tool schemas
+      const usedCategories = breakdown.categories.filter(c =>
+        c.kind !== 'free' &&
+        c.kind !== 'buffer' &&
+        c.kind !== 'deferred' &&
+        !c.isDeferred &&
+        c.name !== 'Free space' &&
+        c.name !== 'Autocompact buffer'
+      )
       const usedTokens = usedCategories.length > 0
         ? usedCategories.reduce((sum, c) => sum + (c.tokens > 0 ? c.tokens : 0), 0)
         : null
@@ -698,11 +708,6 @@ async function refreshWindow($: EngineInterface, s: State) {
         s.ctx = Math.round(breakdown.rawMaxTokens * (breakdown.percentage / 100))
         s.percent = Math.round(breakdown.percentage)
       }
-      // Branch on `kind`, never on the row's `name`: the engine stamps the kind
-      // and warns the label is a display string that can be reworded.
-      const free = breakdown.categories.find(c => c.kind === 'free')
-      s.free = free && free.tokens > 0 ? free.tokens : 0
-      s.compactAt = typeof breakdown.autoCompactThreshold === 'number' ? breakdown.autoCompactThreshold : null
       return
     }
     if (context.window > 0) {
