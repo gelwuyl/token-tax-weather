@@ -827,6 +827,9 @@ async function publish($: EngineInterface, s: State) {
   const live = await liveSurfaces($)
   const raised = live ? live.some(surface => BAND_SURFACES.has(surface)) : BAND_SURFACES.has(s.surface)
   $.ui.status(raised ? hintText(s, s.now) : statusText(s, s.now))
+  try {
+    $.ui.invalidate('ui.render')
+  } catch {}
 }
 
 // The window and its ping period belong to the session that armed them, so a
