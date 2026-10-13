@@ -99,6 +99,14 @@ export type State = {
   lastRequestAt: number
   lastModel: string | null
   ctx: number
+  /**
+   * What the breakdown's own rows add up to, free space, compaction buffer and
+   * deferred schemas aside. Kept only to be shown beside `ctx` on the card: the
+   * rows are the engine's estimates of what fills the window, and this band draws
+   * the engine's `context.tokens` instead, so the two disagreeing is the fact that
+   * explains a band that looks wrong next to the context popover.
+   */
+  rowsTokens: number
   compacted: boolean
   guard: GuardMode
   coldWritePending: boolean
@@ -439,6 +447,7 @@ export type ResumeFields = {
 /** /clear starts a new conversation in the same process; nothing priced before it still exists. */
 export function resetForClear(s: State) {
   s.ctx = 0
+  s.rowsTokens = 0
   s.lastRequestAt = 0
   s.compacted = false
   s.coldWritePending = false
@@ -683,29 +692,30 @@ async function refreshWindow($: EngineInterface, s: State) {
       s.free = free && free.tokens > 0 ? free.tokens : 0
       s.compactAt = typeof breakdown.autoCompactThreshold === 'number' ? breakdown.autoCompactThreshold : null
 
-      // Sum active in-use categories: exclude free space, compaction buffer, and deferred tool schemas
-      const usedCategories = breakdown.categories.filter(c =>
-        c.kind !== 'free' &&
-        c.kind !== 'buffer' &&
-        c.kind !== 'deferred' &&
-        !c.isDeferred &&
-        c.name !== 'Free space' &&
-        c.name !== 'Autocompact buffer'
-      )
-      const usedTokens = usedCategories.length > 0
-        ? usedCategories.reduce((sum, c) => sum + (c.tokens > 0 ? c.tokens : 0), 0)
-        : null
-      if (usedTokens != null && usedTokens > 0) {
-        s.ctx = usedTokens
-        s.percent = Math.round((usedTokens / s.window) * 100)
+      // What the rows add up to, kept only for the card: the row total is an
+      // estimate, so it is never the fill this band draws.
+      const rows = breakdown.categories.filter(c =>
+        c.kind !== 'free' && c.kind !== 'buffer' && c.kind !== 'deferred' &&
+        !c.isDeferred && c.name !== 'Free space' && c.name !== 'Autocompact buffer')
+      s.rowsTokens = rows.length > 0 ? rows.reduce((sum, c) => sum + (c.tokens > 0 ? c.tokens : 0), 0) : 0
+      // The fill is the engine's own figure wherever it reports one. `context.tokens`
+      // is the last response's whole input — uncached, cache-read and cache-written
+      // together — so it is the prompt the model actually answered over, and it is
+      // the same number the engine's own context popover shows. The breakdown's rows
+      // are estimates meant to explain that figure, not to replace it: summing them
+      // drifts from it whenever a row is deferred, unlisted or unaccounted, which is
+      // exactly what put this band at odds with the popover.
+      const live = typeof context.tokens === 'number' && context.tokens > 0 ? context.tokens : null
+      if (live != null) {
+        s.ctx = live
+        // Both figures are read against the window this band reports, so the fill and
+        // the distance to autocompact below share one denominator.
+        s.percent = Math.round((live / s.window) * 100)
       } else if (typeof breakdown.totalTokens === 'number' && breakdown.totalTokens > 0) {
         s.ctx = breakdown.totalTokens
         s.percent = Math.round(breakdown.percentage)
-      } else if (typeof context.tokens === 'number' && context.tokens > 0) {
-        s.ctx = context.tokens
-        s.percent = Math.round(context.percent ?? (s.ctx / s.window) * 100)
       } else if (breakdown.percentage > 0) {
-        s.ctx = Math.round(breakdown.rawMaxTokens * (breakdown.percentage / 100))
+        s.ctx = Math.round(s.window * (breakdown.percentage / 100))
         s.percent = Math.round(breakdown.percentage)
       }
       return
@@ -991,6 +1001,15 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   else lines.push(`state       warm, ${fmtDuration(s.lastRequestAt + TTL_MS - now)} left`)
   lines.push(`context     ${s.ctx.toLocaleString('en-US')} tokens, the most the cache can be holding`)
   lines.push(`window      ${s.window ? `${fmtTok(s.window)} (${s.percent}% used)` : 'not reported yet'}${windowNote(s)}`)
+  // The two readings side by side, because the band draws the first and the engine's
+  // context popover draws something the second resembles: the row total is the
+  // breakdown's own estimate of what fills the window, and the band uses the engine's
+  // reported figure instead. Printing both is what tells a wrong-looking fill from a
+  // band that is right and a row estimate that is not.
+  if (s.rowsTokens > 0 && s.window > 0) {
+    lines.push(`rows        ${s.rowsTokens.toLocaleString('en-US')} tokens by the breakdown's own rows ` +
+      `(${((s.rowsTokens / s.window) * 100).toFixed(1)}%) — an estimate, not the fill the band draws`)
+  }
   // The band leaves this one out because it tracks `compact` too closely; the card
   // is where the complete set of figures belongs.
   if (s.free > 0 && s.window > 0) {
@@ -1080,7 +1099,7 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
 
 export function freshState(): State {
   return {
-    sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
+    sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, rowsTokens: 0, compacted: false,
     guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0, lastPrompt: 0,
     readSession: 0, turns: 0, calls: 0, steps: 0,
     turnOut: 0, turnDurationMs: 0, speedToksPerSec: null, accumStepsOut: 0, accumStepsDurationMs: 0,

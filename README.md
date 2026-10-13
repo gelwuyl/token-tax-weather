@@ -54,7 +54,7 @@ claude plugin install token-tax-weather@token-tax-weather
 | Slot | Forms | Shown when | What it means |
 | --- | --- | --- | --- |
 | **forecast** | `☀ Clear` · `☁ Cloudy` · `☂ Showers` · `☇ Storm` · `↯ Compact soon` | Always | The band's colour — yellow, cyan, blue, magenta, red — at 25%, 50%, 75% and 90% of the window |
-| **fill** | `<context> / <window> (<percent>%)` | Always | The percentage is the engine's own and need not equal `context ÷ window` |
+| **fill** | `<context> / <window> (<percent>%)` | Always | The engine's own input figure for the live window, over the window this band measures against. Both the percentage and `to go` below are read against that one denominator |
 | **sparkline** | up to twelve bars from `▁▂▃▄▅▆▇█` | A completed reading exists, and 56+ columns | One bar per reading, its height that reading's share of the window. Drawn in the forecast's colour, so it sits with the fill it continues |
 | **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings, and 72+ columns | The move since the previous reading. The arrow carries the direction, so the words do not |
 | **to go** | `<tokens> to go (<to-go%>)` · `compact due` | A context exists, and the engine reports an autocompact threshold | The distance to where `/autocompact` fires. Absent with nothing in use, where it would only restate the threshold; `compact due` once past it. **Dim while there is room, red once the window reaches the red step** — the same moment the forecast turns |
@@ -76,7 +76,8 @@ claude plugin install token-tax-weather@token-tax-weather
 - **The turn cache slot groups the three facts about that turn** — calls, cache volume, and hit rate. Dividing the volume by the calls gives your context back.
 - **`cache` reports zero rather than going silent.** A cold turn shows `0 cache / 0%`, confirming the cache served nothing.
 - **The session token count lives in the status line**, keeping the band focused on the current turn.
-- **The window's headroom is reported as `to go` only.** The breakdown also carries a free-space row; the band leaves it out because the two track each other, and `/cache-tax` reports the free figure for anyone who wants it.
+- **The fill is the engine's own figure, not a sum of the breakdown's rows.** The numerator is the input side of the last response — uncached, cache-read and cache-written together — which is the prompt the model actually answered over and the number the engine's own context popover shows. The breakdown's rows are local estimates of what fills the window; `/cache-tax` prints both figures side by side (`context` and `rows`) so the two can be told apart when a row estimate disagrees with the engine.
+- **The window's headroom is reported as `to go` only.** The breakdown also carries a free-space row; the band leaves it out, and `/cache-tax` reports the free figure for anyone who wants it. The two are close but not the same number: `to go` is the distance from **the fill** to the autocompact threshold, while free space is the breakdown's own residual row.
 
 ## The status line
 

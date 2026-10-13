@@ -825,35 +825,58 @@ describe('the band above the prompt', () => {
     expect(band?.text).toContain('compact due')
   })
 
-  test('the band measures context from used categories excluding deferred tools and buffer', async ($, on) => {
+  // The rows the breakdown lists are its own local estimates. The engine's reported
+  // input side is the prompt the model actually answered over, and the figure its own
+  // context popover shows, so the band draws that one and the rows are only a fallback.
+  const liveRows = [
+    { name: 'Messages', tokens: 190700, color: 'blue', isDeferred: false, kind: 'used' as const },
+    { name: 'MCP tools', tokens: 6400, color: 'orange', isDeferred: false, kind: 'used' as const },
+    { name: 'System tools', tokens: 4800, color: 'grey', isDeferred: false, kind: 'used' as const },
+    { name: 'Skills', tokens: 4500, color: 'green', isDeferred: false, kind: 'used' as const },
+    { name: 'Memory files', tokens: 3900, color: 'yellow', isDeferred: false, kind: 'used' as const },
+    { name: 'System prompt', tokens: 3300, color: 'grey', isDeferred: false, kind: 'used' as const },
+    { name: 'Custom agents', tokens: 722, color: 'grey', isDeferred: false, kind: 'used' as const },
+    { name: 'MCP server instructions', tokens: 305, color: 'grey', isDeferred: false, kind: 'used' as const },
+    { name: 'Autocompact buffer', tokens: 33000, color: 'grey', isDeferred: false, kind: 'buffer' as const },
+    { name: 'Free space', tokens: 264400, color: 'inactive', isDeferred: false, kind: 'free' as const },
+    { name: 'MCP tools (deferred)', tokens: 19100, color: 'grey', isDeferred: true, kind: 'deferred' as const },
+    { name: 'System tools (deferred)', tokens: 1500, color: 'grey', isDeferred: true, kind: 'deferred' as const },
+  ]
+
+  test('the engine\'s reported context wins over the breakdown\'s own rows', async ($, on) => {
     mock.clock(on, { now: START })
-    // The native Desktop breakdown sums only rows with kind 'used'. Deferred tool schemas
-    // and compaction buffer are excluded from active context fill.
-    world(on, {
-      rawMax: 512000,
-      categories: [
-        { name: 'Messages', tokens: 91900, color: 'blue', isDeferred: false, kind: 'used' },
-        { name: 'MCP tools', tokens: 5900, color: 'orange', isDeferred: false, kind: 'used' },
-        { name: 'Skills', tokens: 4500, color: 'green', isDeferred: false, kind: 'used' },
-        { name: 'Memory files', tokens: 3900, color: 'yellow', isDeferred: false, kind: 'used' },
-        { name: 'System tools', tokens: 3900, color: 'grey', isDeferred: false, kind: 'used' },
-        { name: 'System prompt', tokens: 3300, color: 'grey', isDeferred: false, kind: 'used' },
-        { name: 'Custom agents', tokens: 722, color: 'grey', isDeferred: false, kind: 'used' },
-        { name: 'MCP server instructions', tokens: 305, color: 'grey', isDeferred: false, kind: 'used' },
-        { name: 'Autocompact buffer', tokens: 33000, color: 'grey', isDeferred: false, kind: 'buffer' },
-        { name: 'Free space', tokens: 364500, color: 'inactive', isDeferred: false, kind: 'free' },
-        { name: 'MCP tools (deferred)', tokens: 19600, color: 'grey', isDeferred: true, kind: 'deferred' },
-        { name: 'System tools (deferred)', tokens: 2300, color: 'grey', isDeferred: true, kind: 'deferred' },
-      ],
-      breakdownTotalTokens: 142300,
-    })
+    // The live session's own figures: the engine reports 282.8k answering over a 512k
+    // window while its rows add up to 214.6k. The band must draw the engine's number,
+    // because that is what the context popover shows; summing rows put it 68.2k low.
+    world(on, { live: { tokens: 282800 }, rawMax: 512000, categories: liveRows, breakdownTotalTokens: 214610 })
     await $.session.start(bandSession)
     await $.turn.complete(turn())
     const band = await bandOf($)
-    // 91.9k + 5.9k + 4.5k + 3.9k + 3.9k + 3.3k + 722 + 305 = 114.4k (22%)
-    expect(band?.text).toContain('114.4k / 512k (22%)')
-    // Auto-compact threshold is 512k - 20k = 492k. 492k - 114.4k = 377.6k to go
-    expect(band?.text).toContain('to go')
+    expect(band?.text).toContain('282.8k / 512k (55%)')
+    // The threshold is 512k - 20k = 492k in this fixture, so 492k - 282.8k = 209.2k.
+    expect(band?.text).toContain('209.2k to go (40.9%)')
+  })
+
+  test('the breakdown stands in for the fill only when the engine reports no context tokens', async ($, on) => {
+    mock.clock(on, { now: START })
+    // A band that showed 0 before the first response of a compacted window: the engine
+    // reports no `context.tokens` yet, so the breakdown's own total is the only figure.
+    world(on, { rawMax: 512000, categories: liveRows, breakdownTotalTokens: 214610 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($)
+    expect(band?.text).toContain('214.6k / 512k (42%)')
+  })
+
+  test('the card prints the row estimate beside the figure the band draws', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, { live: { tokens: 282800 }, rawMax: 512000, categories: liveRows, breakdownTotalTokens: 214610 })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    const card = (await $.command.run(run('cache-tax', ''))).text ?? ''
+    // 190.7k + 6.4k + 4.8k + 4.5k + 3.9k + 3.3k + 722 + 305 = 214,627 by the rows.
+    expect(card).toContain('rows        214,627 tokens by the breakdown\'s own rows (41.9%)')
+    expect(card).toContain('context     282,800 tokens')
   })
 
   test('the breakdown is asked for the free way, never the full one', async ($, on) => {
