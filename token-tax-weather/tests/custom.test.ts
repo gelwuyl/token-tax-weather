@@ -84,6 +84,8 @@ function world(on: On, opts: {
   window?: number
   /** When set, `{ breakdown }` answers a compaction window of this size. */
   rawMax?: number
+  /** When set, the breakdown reports this total token count independently of context.tokens. */
+  breakdownTotalTokens?: number
   /** When set, the breakdown carries a `free` row of this many tokens. */
   free?: number
   autocompactSource?: string
@@ -142,8 +144,8 @@ function world(on: On, opts: {
         autocompactSource: (opts.autocompactSource ?? 'settings') as ContextWindowSource,
         autoCompactThreshold: opts.rawMax - 20000,
         isAutoCompactEnabled: true,
-        percentage: tokens ? (tokens / opts.rawMax) * 100 : 0,
-        totalTokens: tokens ?? 0,
+        percentage: opts.breakdownTotalTokens ? (opts.breakdownTotalTokens / opts.rawMax) * 100 : (tokens ? (tokens / opts.rawMax) * 100 : 0),
+        totalTokens: opts.breakdownTotalTokens ?? tokens ?? 0,
         categories: opts.free == null ? [] : [{
           name: 'Free space', tokens: opts.free, color: 'inactive', isDeferred: false, kind: 'free' as const,
         }],
@@ -807,6 +809,18 @@ describe('the band above the prompt', () => {
     const band = await bandOf($)
     expect(band?.text).toContain('200k / 362k (55%)')
     expect(band?.text).not.toContain('1000k')
+  })
+
+  test('the breakdown totalTokens populates context when plain usage reports no tokens', async ($, on) => {
+    mock.clock(on, { now: START })
+    // In live Desktop, plain $.session.usage() often leaves context.tokens undefined,
+    // but the breakdown summary provides totalTokens. The band must not display 0.
+    world(on, { rawMax: 512000, breakdownTotalTokens: 737280 })
+    await $.session.start(bandSession)
+    await $.turn.complete(turn())
+    const band = await bandOf($)
+    expect(band?.text).toContain('737.3k / 512k (144%)')
+    expect(band?.text).toContain('compact due')
   })
 
   test('the breakdown is asked for the free way, never the full one', async ($, on) => {

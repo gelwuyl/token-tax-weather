@@ -683,6 +683,13 @@ async function refreshWindow($: EngineInterface, s: State) {
       s.window = breakdown.rawMaxTokens
       s.percent = Math.round(breakdown.percentage)
       s.windowSource = breakdown.autocompactSource
+      if (typeof breakdown.totalTokens === 'number' && breakdown.totalTokens > 0) {
+        s.ctx = breakdown.totalTokens
+      } else if (typeof context.tokens === 'number' && context.tokens > 0) {
+        s.ctx = context.tokens
+      } else if (breakdown.percentage > 0) {
+        s.ctx = Math.round(breakdown.rawMaxTokens * (breakdown.percentage / 100))
+      }
       // Branch on `kind`, never on the row's `name`: the engine stamps the kind
       // and warns the label is a display string that can be reworded.
       const free = breakdown.categories.find(c => c.kind === 'free')
@@ -692,6 +699,9 @@ async function refreshWindow($: EngineInterface, s: State) {
     }
     if (context.window > 0) {
       s.window = context.window
+      if (typeof context.tokens === 'number' && context.tokens > 0) {
+        s.ctx = context.tokens
+      }
       s.percent = Math.round(context.percent ?? (s.ctx / context.window) * 100)
       s.windowSource = null
     }
@@ -1431,12 +1441,6 @@ export const register: Register = on => {
       }
     }
     s.coldWritePending = false
-    // The band's history: one reading per completed turn, oldest first.
-    s.history.push(s.ctx)
-    if (s.history.length > HISTORY) s.history = s.history.slice(-HISTORY)
-    // A stop notice is a one-shot: it stays until the turn after it. This turn is
-    // also what reveals which model the engine is really using, so the idle footer
-    // is repainted here; arm() repaints an armed one itself.
     s.stopped = null
     // A notice is a one-shot too: it stays up while the turn it belongs to runs,
     // and the ordinary readout returns once that turn is over. Cleared here, at the
@@ -1445,6 +1449,9 @@ export const register: Register = on => {
     s.notice = null
     if (notice) s.notice = notice
     await refreshWindow($, s)
+    // The band's history: one reading per completed turn, oldest first.
+    s.history.push(s.ctx)
+    if (s.history.length > HISTORY) s.history = s.history.slice(-HISTORY)
     await arm($, s)
     if (!s.deadline) await publish($, s)
     return r
