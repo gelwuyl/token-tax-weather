@@ -1,10 +1,12 @@
 # token-tax-weather
 
-**A forecast band above the prompt, a state line beside the model picker.**
+**A forecast band above the prompt, a quiet state line beside the model picker.**
 
-- **The band** says what the context window is doing: how full it is, how much room is left, how far away `/autocompact` is, turn calls/cache/hit%, and generation speed.
-- **The status line** says whether `/keepwarm` is armed, when it will ping, total session tokens saved, and the rate discount — or, where no surface draws the band, the window facts themselves.
-- **A notice** briefly replaces the status line when something needs attention.
+Every long-running agent session lives under atmospheric pressure. Context accumulates turn by turn, the prompt cache cools in the silence between human thoughts, and autocompaction looms at the window's edge. `token-tax-weather` gives this invisible physics a visible, unobtrusive horizon right where you compose your next thought:
+
+- **The AbovePrompt band** charts the live weather of your context window: current atmospheric fill, remaining headroom before `/autocompact`, a 3-bar trajectory sparkline, directional delta trend, turn cache efficiency, and token generation speed.
+- **The status line** anchors persistent telemetry beside the model picker: whether `/keepwarm` is armed, absolute clock times for the next ping and window expiry, cumulative session tokens saved, and the model's rate discount — or, where no connected surface can paint the band, the context facts themselves.
+- **A notice** briefly supersedes the status line when a threshold is breached or an action demands attention: cold resumes, expiring caches, and unbudgeted writes.
 
 ## Install
 
@@ -31,35 +33,71 @@ claude plugin install token-tax-weather@token-tax-weather
 | --- | --- |
 | `/keepwarm` | Arms a six-hour warming window, pinging after 50 minutes of idle |
 | `/keepwarm 90m`, `/keepwarm 2h30m`, `/keepwarm 6h` | Arms a window of that length |
-| `/keepwarm 6h every 20m` | Starts the search at a 20-minute idle interval; the window must come before `every`. The interval then moves as the pings narrow the TTL |
-| `/keepwarm always` | The same six-hour window as the bare command, for `cache-tax` compatibility; not unbounded, not remembered across sessions |
+| `/keepwarm 6h every 20m` | Starts the search at a 20-minute idle interval; the window must precede `every`. The interval then converges as pings bracket the provider TTL |
+| `/keepwarm always` | Six-hour window, for `cache-tax` compatibility; not unbounded, not remembered across sessions |
 | `/keepwarm off` | Disarms warming |
 | `/keepwarm status` | Reports what is armed |
 | `/cache-tax` | The full card: cache state, context, window, autocompact threshold, token counts, rates, price comparison, warming break-even |
 | `/cache-tax-diagnostic` | Read-only report of whether the host exposes pricing; prints no settings values |
 
-- **There is no `/keepwarm on`.** Run bare `/keepwarm` to arm it. A displayed `on` is a state label, not a command.
-- **Warming spends money.** It sends model requests. Prompt caching can work without it; `/keepwarm` only tries to preserve a cached context across idle time. It does not enable OpenRouter response caching.
+- **There is no `/keepwarm on`.** Run bare `/keepwarm` to arm it. A displayed `on` is an operational state label, not an executable command.
+
+### How `/keepwarm` works
+
+**Warming is an actual model request, not an HTTP header.** It is a conversation kept alive across silence. Prompt caching is provider-side: the host keeps the processed token prefix in memory, bills a fraction of the input rate to read it, and evicts it after an unadvertised idle duration. Re-sending the prefix resets that timer. A ping does not petition a server to preserve state — it *exercises* the cache, which is the singular physical event that keeps it warm.
+
+- **Arming sends nothing.** It simply arms a quiet timer.
+- **When the timer fires**, the plugin invokes the engine's fork, replaying the session's exact prefix — model, system prompt, active tools, and conversation history — capped with a single prompt:
+  ```text
+  Reply with the single word: warm
+  ```
+  The call is tool-less, routed through your session's existing authenticated path, and the trailing ping word is never cached.
+- **Survival is verified empirically, never assumed.** The reply returns the engine's verified token counts:
+  - `read > 0` and `write < 10% read`: The prefix was served warm; the window remains safely armed.
+  - `read 0` or a write comparable to the read: The cache has evaporated; the window disarms immediately, logging `the cache was gone` to the status line and `/cache-tax`.
+
+### How the ping interval converges
+
+**`every` defines the starting frontier, not a permanent cadence.** Each ping tests the provider's unadvertised TTL clock against a known idle duration, tightening a binary search bracket around the boundary:
+
+| Ping attempt | Bracket established | Next scheduled ping |
+| --- | --- | --- |
+| 50m, cold | TTL is strictly under 50m | 25m |
+| 25m, warm | TTL is at least 25m | 38m |
+| 38m, warm | TTL is at least 38m | 44m |
+| 44m, warm | TTL is at least 44m | 47m |
+| 47m, cold | TTL is strictly under 47m | 45m |
+| 45m, cold | TTL is strictly under 45m | Settles stably at 42m |
+
+The search halts once the bracket narrows to a two-minute margin, locking into the longest proven survival gap less that buffer. This avoids the wasteful polling of naive halving (which would have stuck at 25m, sending nearly 1.8× more requests). Cadence is clamped at one minute minimum, stops immediately if the route caches nothing at all, and persists in session storage so subsequent windows resume at the learned interval.
+
+**Four operational boundaries:**
+- **Provider-agnostic by design.** Anthropic explicit breakpoints and automatic gateway prefix caching are both preserved identically through reuse, requiring no custom headers.
+- **Warming cannot create caching upstream.** If the harness or provider does not mark the prefix as cacheable, pings record zero reads and the window halts.
+- **Gateway response caches are separate.** Router-level whole-response caches (such as OpenRouter's) are orthogonal to prompt caching and unaffected by pings.
+- **Warming spends model tokens.** When `cacheWrite` is zero, a cold re-write costs nothing in dollars — so warming protects interactive latency, not financial spend.
 
 ## The band
+
+The composer is where intent becomes a prompt. The band sits directly above it, transforming the hidden physics of the engine into quiet peripheral awareness — so you sense the weight of the conversation and the proximity of compaction before you press Return.
 
 ```text
 <forecast>  <context> / <window> (<percent>%) · [sparkline] · [trend] · [<to go> to go (<to-go%>)] · [<n> calls / <tokens> cache / <hit>%] · [<speed> tok/s]
 ```
 
-**Slots with no data are omitted, never left blank; `·` separates slots and `/` separates the fields inside one.** Token counts use `k` or `M`, to one decimal, trailing `.0` dropped.
+**Slots with no data are omitted, never left blank; `·` separates slots and `/` separates fields within one.** Token counts use `k` or `M`, to one decimal place, trailing `.0` dropped.
 
-**The coloured slots lead.** The forecast, the fill and the sparkline carry the same colour, so the row opens with them; the dim figures follow.
+**The coloured slots lead.** The forecast, the fill, and the sparkline share the forecast's hue, anchoring the visual weight on the left; the dim operational metrics follow in quiet alignment.
 
 | Slot | Forms | Shown when | What it means |
 | --- | --- | --- | --- |
-| **forecast** | `☀ Clear` · `☁ Cloudy` · `☂ Showers` · `☇ Storm` · `↯ Compact soon` | Always | The band's colour — yellow, cyan, blue, magenta, red — at 25%, 50%, 75% and 90% of the window |
-| **fill** | `<context> / <window> (<percent>%)` | Always | The engine's own input figure for the live window, over the window this band measures against. Both the percentage and `to go` below are read against that one denominator |
-| **sparkline** | up to three bars from `▁▂▃▄▅▆▇█` | A completed reading exists, and 56+ columns | One bar per reading, its height that reading's share of the window. Drawn in the forecast's colour, so it sits with the fill it continues |
-| **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings, and 72+ columns | The move since the previous reading. The arrow carries the direction, so the words do not. Coloured by delta: green for context reductions (`▼`), yellow/red for growth (`▲`), dim for `steady` |
-| **to go** | `<tokens> to go (<to-go%>)` · `compact due` | A context exists, and the engine reports an autocompact threshold | The distance to where `/autocompact` fires. Absent with nothing in use, where it would only restate the threshold; `compact due` once past it. **Dim while there is room, red once the window reaches the red step** — the same moment the forecast turns |
-| **turn cache** | `<n> calls / <tokens> cache / <hit>%` | A turn has completed | Three measures of the turn just gone. **calls** is the model calls it made, from the engine's step index. **tokens** is cache-served tokens across those calls (`0` on a cold turn). **hit%** is the share of that turn's prompt tokens the cache carried (`0%` when cold) |
-| **speed** | `<speed> tok/s` | Generation timing is recorded | Model generation throughput across the calls of the last turn |
+| **forecast** | `☀ Clear` · `☁ Cloudy` · `☂ Showers` · `☇ Storm` · `↯ Compact soon` | Always | The atmospheric barometer: yellow (<25%), cyan (25–50%), blue (50–75%), magenta (75–90%), and red (90%+). The forecast sets the dominant color for the entire leading group |
+| **fill** | `<context> / <window> (<percent>%)` | Always | The engine's empirical ground truth — the actual prompt footprint ingested by the model on the last turn, measured against the window ceiling. Both the fill percentage and headroom `to go` share this exact denominator |
+| **sparkline** | up to three bars from `▁▂▃▄▅▆▇█` | A completed reading exists, and 56+ columns | A three-bar seismic trajectory. Scaled against the window and painted in the forecast's hue, showing whether context is cresting or stabilizing across recent turns without demanding numeric reading |
+| **trend** | `▲ +<tokens>` · `▼ <tokens>` · `steady` | Two or more readings, and 72+ columns | Directional velocity of context since the last turn. The glyph carries direction; color communicates consequence: green on reduction (`▼`), yellow on growth (`▲`), urgent red when growth enters `Compact soon`, and dim for quiet equilibrium (`steady`) |
+| **to go** | `<tokens> to go (<to-go%>)` · `compact due` | A context exists, and the engine reports an autocompact threshold | Remaining headroom before `/autocompact` triggers and shears history. Stays unobtrusively dim while headroom remains; flashes red in exact synchrony with the forecast ramp at 90% |
+| **turn cache** | `<n> calls / <tokens> cache / <hit>%` | A turn has completed | The mechanical efficiency of the turn just gone: roundtrip model calls, prompt tokens served warm from cache, and cache hit percentage. Never silent: cold turns report `0 cache / 0%` with honest precision |
+| **speed** | `<speed> tok/s` | Generation timing is recorded | Model generation throughput averaged across all calls of the completed turn |
 
 **Widest to narrowest:**
 
@@ -71,23 +109,23 @@ claude plugin install token-tax-weather@token-tax-weather
 ☁  Cloudy  164.1k / 362k (46%)  ·  1 call / 0 cache / 0%
 ```
 
-- **Every percentage in the band is of the window**, so all of them read against one denominator.
-- **Only the sparkline and the trend are dropped for width.** No figure is.
-- **The turn cache slot groups the three facts about that turn** — calls, cache volume, and hit rate. Dividing the volume by the calls gives your context back.
-- **`cache` reports zero rather than going silent.** A cold turn shows `0 cache / 0%`, confirming the cache served nothing.
-- **The session token count lives in the status line**, keeping the band focused on the current turn.
-- **The fill is the engine's own figure, not a sum of the breakdown's rows.** The numerator is the input side of the last response — uncached, cache-read and cache-written together — which is the prompt the model actually answered over and the number the engine's own context popover shows. The breakdown's rows are local estimates of what fills the window; `/cache-tax` prints both figures side by side (`context` and `rows`) so the two can be told apart when a row estimate disagrees with the engine.
-- **The window's headroom is reported as `to go` only.** The breakdown also carries a free-space row; the band leaves it out, and `/cache-tax` reports the free figure for anyone who wants it. The two are close but not the same number: `to go` is the distance from **the fill** to the autocompact threshold, while free space is the breakdown's own residual row.
+- **Every percentage in the band shares the window as its single denominator**, preventing misleading mental conversions across varying bases.
+- **Only the sparkline and trend drop under narrow viewports.** Concrete metrics remain anchored for as long as terminal width allows.
+- **The turn cache slot unifies three interdependent facts** — model calls, cache volume, and hit rate. Dividing cache volume by calls reveals the effective context carried per step.
+- **`cache` reports zero rather than fading into silence.** A cold turn explicitly prints `0 cache / 0%`, confirming the cache served nothing rather than leaving the operator to wonder if telemetry dropped.
+- **The session token count lives on the status line**, keeping the AbovePrompt band dedicated to the tactical dynamics of the current turn.
+- **The fill is the engine's reported input side, not a synthetic sum of category estimates.** It represents the exact input tokens the model processed (uncached, cache-read, and cache-written combined). `/cache-tax` prints both `context` and `rows` side by side so discrepancies in local category estimates remain transparent.
+- **Headroom is reported solely as `to go` to compaction.** Rather than confusing users with multiple conflicting free-space numbers, `to go` measures the true operational distance from current fill to the autocompact threshold.
 
 ## The status line
 
-**One line, not a set of tiers.** A notice outranks everything; otherwise the band decides which facts the line carries, because the band and the line share the work between them.
+**The band is live atmospheric weather; the status line is grounded operational navigation.** It sits beside the model picker, providing a single consolidated status readout that prioritizes urgent events over ongoing background state.
 
 | The line | Drawn when | Carries |
 | --- | --- | --- |
-| **a notice** | an event needs attention now | what happened, the figure, what to do — it is a one-off thing to read now, so it outranks everything, the band's own surface included |
-| **the desktop and terminal form** | no notice, and a connected surface draws the band | state, ping, cost, command hints — the band already carries the window, so this line carries what the band cannot |
-| **the VS Code and mobile form** | no notice, and no connected surface draws the band | state, ping, context, cache, cost — nothing else is showing the window, so this line has to |
+| **a notice** | an event demands immediate attention | what happened, the cost impact, and what to do — an ephemeral high-priority alert that outranks all standard telemetry |
+| **the desktop and terminal form** | no notice, and a connected surface draws the band | warming state, clock-time pings, session savings, rate discount, and command hints |
+| **the VS Code and mobile form** | no notice, and no connected surface draws the band | state, ping, bare context count, turn cache, speed, and savings — self-contained fallback telemetry |
 
 **Only one of the three can ever draw.** On the desktop and terminal surfaces you only ever see the desktop and terminal form; the other is for a session attached to VS Code or a phone. The app clips this row and reveals the rest on hover, so the plugin writes the whole string and a long line costs nothing. It is plain text — the price carries no colour, so its form is the whole of what it can say.
 
@@ -177,69 +215,9 @@ off · no context yet
 
 **The forecast, fill, sparkline, trend, to-go, session and command hints are all dropped here** — this row has no width for them, and no band above it carries them either, which is why the window slots are here and not there.
 
-## What `/keepwarm` actually sends
+## Rates and price comparison
 
-**Warming is a model request, not a header.**
-
-- **Arming a window sends nothing at all.** It only sets a timer.
-- **When the timer fires**, the plugin calls the engine's fork, which re-sends the session's own transcript as the main thread last sent it — its model, system prompt, tools and messages — with one short message after it:
-
-```text
-Reply with the single word: warm
-```
-
-- **The engine describes that call** as existing "so the API serves that prefix from its cache". It is tool-less, and the message itself is never cached.
-- **It goes wherever your session's requests already go.** The plugin sets no cache directive, names no provider, and never talks to a provider API itself. It asks the engine, and the engine routes the request exactly as it routes your own prompt.
-- **A request is what warms a cache.** Prompt caching is provider-side: the provider keeps a processed prefix, charges a reduced rate to read it again, and expires it after some idle time. Sending the prefix again is what resets that clock — so a ping is not asking anyone to keep something, it is *using* the cache, which is the thing that stops the cache from being dropped.
-
-**Whether it works where you are is reported, not assumed.** The ping's reply carries the engine's own token counts, and the plugin reads them:
-
-| The ping's reply | What the plugin does |
-| --- | --- |
-| read > 0, and a write under 10% of that read | counts the prefix served from cache; the window stays armed |
-| read 0, or a write as large as the read | stops the window, saying `the cache was gone` and giving both counts |
-
-**`/cache-tax` prints the last ping's two counts and its cost**, and a stopped window carries the same reason on the status line. A setup where warming does nothing announces itself here rather than on a bill.
-
-**Each outcome also measures the provider's expiry clock, which nothing else can.** The plugin cannot read that clock — the engine does not expose it, and the window `/keepwarm` arms is a budget this plugin chooses, not a lifetime the provider promised. But every ping was preceded by a known idle gap, and its outcome is a fact about the clock:
-
-| The ping came back | What the gap proves |
-| --- | --- |
-| warm after a gap of *N* | the provider's TTL is **at least** *N* |
-| cold after a gap of *N* | the provider's TTL is **under** *N* |
-
-**Both bounds reach the status line, folded into the ping slot they came from** — `ping at 2:40pm (held 50m)` after a warm ping, `ping at 2:15pm (went at 50m)` after a cold one — and the card spells them out: `last ping … (warm after 50m idle, so the provider's TTL is at least that)`. Neither takes a slot of its own, and both are worth saying, because each moves the interval the window pings at next. **The bound costs nothing to learn**: it comes from a request the window was going to send anyway.
-
-### How the ping interval finds itself
-
-**`every` is the interval a window starts at, not one it is stuck with.** Each ping narrows the bracket around the TTL, and the next interval is the midpoint of whatever the pings have settled. With a TTL of about 45 minutes and the default 50-minute start:
-
-| The ping at | Brackets to | Next ping |
-| --- | --- | --- |
-| 50m, cold | TTL is under 50m | 25m |
-| 25m, warm | TTL is at least 25m | 38m |
-| 38m, warm | TTL is at least 38m | 44m |
-| 44m, warm | TTL is at least 44m | 47m |
-| 47m, cold | TTL is under 47m | 45m |
-| 45m, cold | TTL is under 45m | settles at 42m |
-
-**The search stops once the bracket is down to a two-minute margin**, and settles at the longest gap *proven* to work, less that margin. That is what the last two rows buy: a window that only ever halved would have stopped at the first gap that worked — 25m — and pinged there for the rest of its six hours, sending about 1.8 times as many requests as one pinging at 42m against the same 45-minute TTL.
-
-- **It will not go below one minute**, because below that it is not warming a cache but polling one.
-- **It stops outright when a ping neither reads nor writes** a cache entry, because that is not a short TTL but no caching at all — the case where continuing would spend on every interval and have nothing to show for any of it.
-- **The interval it settles on is remembered in the session's store**, so a window re-armed in the same session — or opened in the next one — resumes at the interval the last one learned instead of starting the search over. `/keepwarm … every 30m` resets the search and starts from 30m, because a number you name is newer than anything the pings found.
-
-**Three consequences worth being explicit about:**
-
-- **Automatic caching needs no header.** Anthropic's API takes explicit `cache_control` breakpoints; several other providers cache a long-enough prompt on their own, with nothing in the request to mark it. A ping warms either kind, because both kinds are warmed by reuse — which is why the plugin can stay provider-agnostic.
-- **The plugin cannot turn on caching the harness is not already asking for.** If nothing upstream marks a prefix as cacheable, a ping reads nothing and the window stops. That is the plugin reporting your setup accurately, not the ping failing.
-- **A router's response cache is a different thing.** OpenRouter and similar gateways also keep a cache of *whole responses* keyed on the exact request. That is not prompt caching, this plugin neither controls nor observes it, and a prompt-cache hit is no evidence of a response-cache hit.
-
-**Warming pays only when a cache read costs less than the write it avoids.** With the shipped rates, where `cacheWrite` is `0`, it does not.
-
-## Reading the price comparison
-
-**`/cache-tax` shows what one read of the context you have right now costs**, three ways, each measured against the same baseline:
+**Providers quote rates per million tokens, but a rate is not a bill.** `/cache-tax` translates raw rates into concrete dollars for the exact context currently in memory, comparing three distinct scenarios against the uncached baseline:
 
 ```text
 cost        for 66.7k tokens   no cache $0.03 = 100%
@@ -247,30 +225,20 @@ cost        for 66.7k tokens   no cache $0.03 = 100%
                                re-write $0.00 = 0% of that
 ```
 
-- **`no cache`** is the baseline: the whole context sent as ordinary input.
-- **`from cache`** is the same context read from a warm cache.
-- **`re-write`** is the context written to the cache afresh, after it has expired.
-- **The share beside each is of the baseline**, so the comparison can be read without knowing any rate. A share that is real but rounds away shows `<1%` rather than `0%`, which keeps "nearly nothing" apart from "nothing".
+- **`no cache`** is the baseline: the entire context billed as fresh, uncached input.
+- **`from cache`** is the same context read from a warm prompt cache.
+- **`re-write`** is the context written to cache anew after eviction.
+- **The share beside each is relative to the baseline**, so efficiency is obvious without mental arithmetic. A real but rounding share prints `<1%` rather than `0%` to keep "nearly nothing" distinct from "nothing".
 
-**The effect is `from cache` minus `no cache`** — the difference between two of those figures:
+**The net financial effect is `from cache` minus `no cache`:**
+- **A saving is parenthesised**, `($0.03)`: reading from cache costs less than the baseline. Parentheses are accounting's native mark for a credit, avoiding ambiguity with hyphens.
+- **A surcharge carries a leading `+`**, `+$0.03`: reading from cache costs more than uncached input.
+- **Zero is `+$0.00`**: input and cache-read costs are equal.
+- **`n/a`**: no rates are configured for the active model.
 
-- **A saving is parenthesised**, `($0.03)`: reading this context from cache costs less than uncached input. Parentheses are accounting's own mark for a credit, and avoid a minus sign that could be read as a hyphen.
-- **A surcharge carries a leading `+`**, `+$0.03`: reading it from cache costs more than uncached input.
-- **Zero is `+$0.00`**: the two input costs are equal. It is a real answer, and it never takes parentheses.
-- **`n/a`:** no rates are configured for the model.
+### Rate configuration and discount math
 
-**The card carries the signed difference because it has room to say what a sign means. The status line carries no money at all.** It carries session tokens and the model's rate discount — `41.6M session, 93% saved`:
-
-- **`session` counts the accumulated tokens served from cache** across all completed turns since `/clear`. It lives here rather than on the band, keeping the band focused on the current turn.
-- **`93% saved` is a rate, and deliberately so.** It is what a carried token costs against an uncarried one. It is the *same* figure at every context size, because the context cancels out of it (`(ctx × cacheRead) ÷ (ctx × input) = cacheRead ÷ input`) — only the money it is worth moves.
-
-**Neither is the turn's bill.** The turn's cache volume and hit rate are on the band; the status line anchors long-term session tokens and the rate discount. Neither tells you whether the cache is *warm* right now — that depends on when the last request was. The card separately explains whether warming can pay for itself.
-
-**Providers publish rates per million tokens, and this plugin's are no exception — but a rate is not a bill**, so the card shows the bill for the context in hand. The rates themselves, and where each one came from, are the subject of `/cache-tax-diagnostic`.
-
-## The rates
-
-**Prices are user-supplied USD per million tokens**, in `token-tax-weather/hooks/register.ts`:
+**Prices are user-supplied USD per million tokens**, defined in `token-tax-weather/hooks/register.ts`:
 
 ```ts
 export const RATES: Record<string, Rates> = {
@@ -279,9 +247,9 @@ export const RATES: Record<string, Rates> = {
 }
 ```
 
-- **Rows match the engine's exact model ID**, not the picker's display label. A model with no row shows `n/a`; the plugin never borrows another model's price.
-- **Both rows read at a fraction of their input rate**, so the cache is a saving on either.
-- **Both have a zero cache-write price**, so a cold re-write is billed at nothing — which means **paid warming cannot pay for itself at these rates**, however good the read discount looks. Filling in a real cache-write price is what would make the break-even line mean something.
+- **Keys match the engine's exact model ID**, never the UI picker's display label. Unconfigured models display `n/a`; rates are never borrowed across models.
+- **The rate discount is invariant to context size.** The status line displays `41.6M session, 93% saved` (or `0 session, 93% saved` before cache hits). The percentage is `(input - cacheRead) ÷ input` — because token count cancels out of the fraction, the discount percentage is constant across all context sizes, while the dollar value it represents grows with every turn.
+- **The break-even reality.** When a provider prices `cacheWrite` at zero, a cold re-write incurs no dollar surcharge. At those rates, paid warming cannot pay for itself in monetary savings alone; its true return is eliminating the time-to-first-token latency penalty of re-ingesting massive context windows.
 
 ## Privacy and limits
 
