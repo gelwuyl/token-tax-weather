@@ -1325,27 +1325,17 @@ export const register: Register = on => {
     return band(Box, Text, e.props, s)
   })
 
-  // The resume fields Claude Code computes for settings hooks seed the guard
-  // before any turn of the resumed session has run.
-  on('classic.SessionStart', async ($, e, next) => {
+  // When a /clear runs, session.end fires with reason 'clear'. Reset the session's
+  // counters, disarm warming, and immediately publish so the line reflects the clean slate.
+  on('session.end', async ($, e, next) => {
     const r = await next(e)
-    if (e.source === 'clear') {
+    if (e.reason === 'clear') {
       await stop($, s, null)
       s.stopped = null
       resetForClear(s)
       s.sid = await $.session.id()
-      return r
+      await publish($, s)
     }
-    const line = seedFromResume(s, e, await $.clock.now())
-    // The resume payload may omit the model; without it the guard cannot price the cold write.
-    if (!s.lastModel) s.lastModel = await $.session.model()
-    // A cold resume is a notice on the status line, not a transcript line: it is
-    // read now, and it stays up until the first turn finishes.
-    if (line) s.notice = line
-    // The seeded clock decides whether a restored window pings before the first turn: never when it is cold.
-    await arm($, s)
-    // arm() only paints when a window is armed; a bare resume still has to show.
-    if (line) await publish($, s)
     return r
   })
 

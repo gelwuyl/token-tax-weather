@@ -2,7 +2,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type {
   CommandRunInput, CommandSpec, ContextCategory, ModelForkResult, On, PromptSubmitInput, RenderSurface,
-  ContextWindowSource, SessionContextUsage, SessionStartInput, Settings, SettingsSource, TurnCompleteInput, TurnUsage,
+  ContextWindowSource, SessionContextUsage, SessionEndInput, SessionStartInput, Settings, SettingsSource, TurnCompleteInput, TurnUsage,
 } from 'claude-code'
 
 import { RATES, costSlotText, fmtClock, fmtShare, fmtSignedUsd, fmtSpeed, hitPct, ratesFor, savedPct } from '../hooks/register'
@@ -171,7 +171,7 @@ function world(on: On, opts: {
   })
   on('prompt.submit', ($, e) => { entered.push(e.text); return { text: e.text } })
   on('session.compact', ($, e) => ({ messages: e.messages }))
-  on('classic.SessionStart', () => ({}))
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
   on('ui.status', ($, e) => { status.push(e.text); return { value: undefined } })
   // The band is a tree the engine caches until a plugin invalidates it, so a paint
@@ -1075,44 +1075,42 @@ describe('the card reports both surfaces', () => {
   })
 })
 
-// A cold resume is the engine's own computed fields for a settings hook; the
-// notice it seeds is what a person reads once and acts on, so it belongs on the
-// status line rather than in the transcript.
-const resume: Parameters<Engine['classic']['SessionStart']>[0] = {
-  source: 'resume', model: MODEL, context_tokens: 200000,
-  seconds_since_last_response: 2 * HOUR, prompt_cache_likely_expired: true,
-}
-
 // The status line shares one row with the model picker, and the app clips what
 // does not fit. So a notice is written to a budget rather than to a sentence,
 // and this is that budget: the longest notice the mod is allowed to raise.
 const NOTICE_MAX = 44
 
 describe('status-line notices', () => {
-  test('a cold resume pins the notice on the band surface, and the turn clears it', async ($, on) => {
-    mock.clock(on, { now: START })
+  test('a cold prompt warns with a notice that pins on the band surface, and the turn clears it', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
     const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
     await $.session.start(bandSession)
-    await $.classic.SessionStart(resume)
+    await $.turn.complete(turn())
+    await clock.advance(2 * HOUR)
+    await $.prompt.submit(prompt('hi'))
     // The band surface normally leaves the status line empty, but a notice is not
     // the readout: it is pinned wherever it is set, the band's own surface included.
-    expect(w.status.at(-1)).toMatch(/^cold resume · /)
+    expect(w.status.at(-1)).toMatch(/^cold \d+.* · re-write ≈\$/)
+    expect(w.status.at(-1)).toMatch(/ · sending$/)
     expect((w.status.at(-1) ?? '').length).toBeLessThanOrEqual(NOTICE_MAX)
-    await $.turn.complete(turn())
+    await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 0 }) }))
     // No cold write this turn, so the notice is cleared and the line is the hint
     // line again — which is what the band surface shows when no notice is up.
-    expect(w.status.at(-1)).toBe(HINT_FOOTER)
+    // Two turns in this session accumulated 400k cached tokens.
+    expect(w.status.at(-1)).toBe('off · 400k session, 93% saved · /keepwarm to arm the window · /cache-tax for the full card')
   })
 
   test('a notice outranks the fallback on a surface the band never reaches', async ($, on) => {
-    mock.clock(on, { now: START })
+    const clock = mock.clock(on, { now: START })
     const w = world(on, { live: { tokens: 200000 } })
     await $.session.start(session)
+    await $.turn.complete(turn())
     // With no notice the readout is the fallback facts.
     expect(w.status.at(-1) ?? '').toMatch(/^off · /)
-    await $.classic.SessionStart(resume)
+    await clock.advance(2 * HOUR)
+    await $.prompt.submit(prompt('hi'))
     // A live notice takes precedence over them.
-    expect(w.status.at(-1)).toMatch(/^cold resume · /)
+    expect(w.status.at(-1)).toMatch(/^cold \d+.* · re-write ≈\$/)
     expect(w.status.at(-1) ?? '').not.toMatch(/^off · /)
   })
 
@@ -1217,11 +1215,13 @@ describe('the line the band frees', () => {
   })
 
   test('a notice still outranks the line', async ($, on) => {
-    mock.clock(on, { now: START })
+    const clock = mock.clock(on, { now: START })
     const w = world(on, { live: { tokens: 200000 }, rawMax: 362000 })
     await $.session.start(bandSession)
-    await $.classic.SessionStart(resume)
-    expect(w.status.at(-1)).toMatch(/^cold resume · /)
+    await $.turn.complete(turn())
+    await clock.advance(2 * HOUR)
+    await $.prompt.submit(prompt('hi'))
+    expect(w.status.at(-1)).toMatch(/^cold \d+.* · re-write ≈\$/)
   })
 })
 
@@ -1274,7 +1274,7 @@ describe('the session read total', () => {
     world(on, { live: { tokens: 200000 } })
     await $.session.start(session)
     await $.turn.complete(turn())
-    await $.classic.SessionStart({ ...resume, source: 'clear' })
+    await $.session.end({ reason: 'clear', sessionId: 'S1', resume: {} as any })
     const card = await $.command.run(run('cache-tax', ''))
     expect(card.text).not.toMatch(/usage/)
     expect(card.text).not.toMatch(/session read/)
