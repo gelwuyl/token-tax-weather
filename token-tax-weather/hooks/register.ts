@@ -107,7 +107,6 @@ export type State = {
    * explains a band that looks wrong next to the context popover.
    */
   rowsTokens: number
-  compacted: boolean
   guard: GuardMode
   coldWritePending: boolean
   misses: Miss[]
@@ -126,8 +125,8 @@ export type State = {
   /**
    * Cache-read tokens summed over every main turn since the last /clear: the
    * running total, where `lastRead` is only the turn just gone. A compaction does
-   * not start a new conversation, so it survives `session.compact` the same way
-   * the cold-write tally below does; only /clear resets it.
+   * not start a new conversation, so it survives one the same way the
+   * cold-write tally below does; only /clear resets it.
    */
   readSession: number
   /** Completed main turns since the last /clear: what `readSession` was summed over. */
@@ -424,7 +423,7 @@ function breakEvenPings(s: State): number | null {
 }
 
 function isCold(s: State, now: number): boolean {
-  return s.lastRequestAt > 0 && !s.compacted && now - s.lastRequestAt >= TTL_MS
+  return s.lastRequestAt > 0 && now - s.lastRequestAt >= TTL_MS
 }
 
 // One line, because the status line is one line in a slot the app fixes the
@@ -449,7 +448,6 @@ export function resetForClear(s: State) {
   s.ctx = 0
   s.rowsTokens = 0
   s.lastRequestAt = 0
-  s.compacted = false
   s.coldWritePending = false
   s.misses = []
   s.lastRead = 0
@@ -477,7 +475,6 @@ export function seedFromResume(s: State, e: ResumeFields, now: number): string |
   if (typeof e.context_tokens === 'number' && e.context_tokens > 0) s.ctx = e.context_tokens
   if (typeof e.seconds_since_last_response === 'number') s.lastRequestAt = now - e.seconds_since_last_response * 1000
   if (typeof e.model === 'string') s.lastModel = e.model
-  s.compacted = false
   if (e.prompt_cache_likely_expired !== true || s.ctx < BIG_TOKENS) return null
   const usd = typeof e.estimated_cache_write_usd === 'number' ? fmtUsd(e.estimated_cache_write_usd) : fmtUsd(coldUsd(s))
   // Same one-line budget as the guard. The advice that used to ride along here
@@ -898,7 +895,7 @@ async function arm($: EngineInterface, s: State) {
   const now = await $.clock.now()
   if (now >= s.deadline) return stop($, s, null)
   // A cold window still needs expiry cleanup, but must not send a model request.
-  if (s.lastRequestAt && !s.compacted && !isCold(s, now)) {
+  if (s.lastRequestAt && !isCold(s, now)) {
     const delay = Math.min(s.deadline - now, Math.max(1000, s.lastRequestAt + s.every - now))
     s.pending = $.clock.after(delay, () => { void ping($, s) })
   } else {
@@ -1011,8 +1008,7 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
   const lines: string[] = []
   const r = ratesFor(s.lastModel)
   lines.push(`${s.lastModel ?? 'model not seen yet'}`)
-  if (s.compacted) lines.push('state       reset by compaction, waiting for the first turn')
-  else if (!s.lastRequestAt) lines.push('state       no request yet this session')
+  if (!s.lastRequestAt) lines.push('state       no request yet this session')
   else if (isCold(s, now)) lines.push(`state       COLD, last request ${fmtDuration(now - s.lastRequestAt)} ago`)
   else lines.push(`state       warm, ${fmtDuration(s.lastRequestAt + TTL_MS - now)} left`)
   lines.push(`context     ${s.ctx.toLocaleString('en-US')} tokens, the most the cache can be holding`)
@@ -1115,7 +1111,7 @@ function card(s: State, now: number, surfaces: readonly RenderSurface[] | null):
 
 export function freshState(): State {
   return {
-    sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, rowsTokens: 0, compacted: false,
+    sid: '', deadline: 0, every: PING_AFTER_MS, warmAt: 0, coldAt: null, lastRequestAt: 0, lastModel: null, ctx: 0, rowsTokens: 0,
     guard: 'warn', coldWritePending: false, misses: [], pending: null, last: null, stopped: null, lastRead: 0, lastPrompt: 0,
     readSession: 0, turns: 0, calls: 0, steps: 0,
     turnOut: 0, turnDurationMs: 0, speedToksPerSec: null, accumStepsOut: 0, accumStepsDurationMs: 0,
@@ -1428,7 +1424,6 @@ export const register: Register = on => {
     if (s.deadline && now >= s.deadline) await stop($, s, null)
     // turn.step stamps the exact request time; when no step of this turn did, the turn's end is the floor.
     if (now - s.lastRequestAt > e.durationMs) s.lastRequestAt = now
-    s.compacted = false
     // The turn's call count, read before the next turn's steps start arriving. A
     // turn that reported no step still made at least one call, so the floor is one
     // rather than zero — a zero here would read as a turn that cost nothing.
@@ -1459,6 +1454,12 @@ export const register: Register = on => {
       const write = u.cache_creation_input_tokens
       const live = (await $.session.usage()).context.tokens
       s.ctx = live && live > 0 ? live : u.input_tokens + u.cache_read_input_tokens + write
+      // A compaction between turns is the one thing that shrinks the context
+      // by half or more — a completed turn only ever grows it. Detected here
+      // rather than on the compact event itself, because the desktop's
+      // first-party security plugin may send that event on past this plugin's
+      // tier, while this hook is the one every surface already paints through.
+      const compacted = prev > 20000 && s.ctx > 0 && s.ctx < 0.5 * prev
       // What the cache actually served this turn — the honest "warmed" figure,
       // as against the context size, which is only what it could be holding. The
       // running total is accumulated here rather than derived from the history,
@@ -1471,8 +1472,10 @@ export const register: Register = on => {
       s.lastPrompt = u.input_tokens + u.cache_read_input_tokens + write
       s.readSession += u.cache_read_input_tokens
       s.turns += 1
+      // A compaction's first turn rewrites the whole new context by design:
+      // that write is neither a miss to record nor a warning to raise.
       const full = prev > 20000 && write >= 0.5 * prev
-      if ((full || s.coldWritePending) && write > 0) {
+      if (!compacted && (full || s.coldWritePending) && write > 0) {
         const rates = ratesFor(s.lastModel)
         const usd = rates ? write * rates.cacheWrite / 1e6 : null
         s.misses.push({ at: now, tokens: write, usd })
@@ -1495,16 +1498,6 @@ export const register: Register = on => {
     if (s.history.length > HISTORY) s.history = s.history.slice(-HISTORY)
     await arm($, s)
     if (!s.deadline) await publish($, s)
-    return r
-  })
-
-  on('session.compact', async ($, e, next) => {
-    const r = await next(e)
-    if (!e.agentId) {
-      s.compacted = true
-      s.ctx = 0
-      disarm(s)
-    }
     return r
   })
 }

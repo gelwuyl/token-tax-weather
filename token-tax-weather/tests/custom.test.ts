@@ -1141,6 +1141,28 @@ describe('status-line notices', () => {
     expect(w.status.at(-1) ?? '').toMatch(/^off · /)
   })
 
+  test('a turn that halves the context is a compaction, so its rewrite is not a miss', async ($, on) => {
+    mock.clock(on, { now: START })
+    // The fixture reads `live.tokens` on every call, so halving it between turns
+    // models a compaction the way the engine reports one: the context shrank
+    // between two completed turns, which nothing but a compaction does.
+    // Detection rides this turn rather than the compact event, which the
+    // desktop's security plugin may send on past this plugin's tier.
+    const live = { tokens: 100000 }
+    const w = world(on, { store: new Map(), live })
+    await $.session.start(session)
+    // A full rewrite against a full context is a genuine miss, and is said.
+    await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 60000 }) }))
+    expect(w.status.at(-1)).toMatch(/^cold write 60k · /)
+    // The context halves between turns: compaction. The whole new context is
+    // rewritten by design, so that write is neither recorded nor warned about,
+    // and the notice from the turn before is cleared.
+    live.tokens = 30000
+    await $.turn.complete(turn({ usage: usage({ cache_creation_input_tokens: 30000 }) }))
+    expect(w.status.at(-1) ?? '').not.toMatch(/cold write/)
+    expect(w.status.at(-1) ?? '').toMatch(/^off · /)
+  })
+
   test('a notice-bearing paint still invalidates the band, so the row the line describes is redrawn', async ($, on) => {
     mock.clock(on, { now: START })
     // A cold write is raised at the end of its own turn and survives the next, and a
